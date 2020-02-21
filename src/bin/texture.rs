@@ -3,13 +3,13 @@ use std::{
 	ffi::CString,
 	io::Cursor,
 	mem::{self, align_of},
+	ops::Deref,
 	os::raw::c_void
 };
 
 use vulkayes_core::ash::{util::*, vk};
 
 use examples::*;
-use std::ops::Deref;
 
 #[derive(Clone, Debug, Copy)]
 struct Vertex {

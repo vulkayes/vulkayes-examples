@@ -5,10 +5,10 @@ authors = ["maik klein <maikklein@googlemail.com>"]
 edition = "2018"
 
 [dependencies]
-winit = "0.19.5"
 image = "0.10.4"
 
 vulkayes-core = { path = "../vulkayes-core" }
+vulkayes-window = { path = "../vulkayes-window", features = ["winit"] }
 
 log = "0.4"
 edwardium_logger = "1"

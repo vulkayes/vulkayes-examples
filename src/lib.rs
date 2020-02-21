@@ -1,55 +1,30 @@
-use vcore::{device::Device, entry::Entry, instance::Instance, queue::Queue, Vrc};
-use vulkayes_core as vcore;
-
-use vulkayes_core::ash;
-
-#[cfg(target_os = "windows")]
-extern crate winapi;
-
-#[cfg(target_os = "macos")]
-extern crate cocoa;
-#[cfg(target_os = "macos")]
-extern crate metal;
-#[cfg(target_os = "macos")]
-extern crate objc;
-extern crate winit;
-#[cfg(target_os = "macos")]
-use cocoa::appkit::{NSView, NSWindow};
-#[cfg(target_os = "macos")]
-use cocoa::base::id as cocoa_id;
-#[cfg(target_os = "macos")]
-use metal::CoreAnimationLayer;
-#[cfg(target_os = "macos")]
-use objc::runtime::YES;
-#[cfg(target_os = "macos")]
-use std::mem;
-
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
-use ash::extensions::khr::XlibSurface;
-use ash::extensions::{
-	ext::DebugReport,
-	khr::{Surface, Swapchain}
-};
-
-#[cfg(target_os = "windows")]
-use ash::extensions::khr::Win32Surface;
-#[cfg(target_os = "macos")]
-use ash::extensions::mvk::MacOSSurface;
-
-pub use ash::version::{DeviceV1_0, EntryV1_0, InstanceV1_0};
-use ash::vk;
 use std::{
 	cell::RefCell,
 	default::Default,
-	ffi::CStr,
-	ops::{Deref, Drop},
-	os::raw::c_void
+	ops::{Deref, Drop}
 };
+
+use ash::{
+	extensions::{
+		khr::{Surface, Swapchain}
+	},
+	version::{DeviceV1_0},
+	vk
+};
+
 use vulkayes_core::{
-	instance::ApplicationInfo,
+	ash,
+	device::Device,
+	entry::Entry,
+	instance::{ApplicationInfo, Instance},
 	physical_device::enumerate::PhysicalDeviceMemoryProperties,
-	util::fmt::VkVersion
+	queue::Queue,
+	util::fmt::VkVersion,
+	Vrc
 };
+
+use vulkayes_window::winit::winit;
+use winit::event_loop::EventLoop;
 
 // Simple offset_of macro akin to C++ offsetof
 #[macro_export]
@@ -104,89 +79,6 @@ pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffe
 	}
 }
 
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
-unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
-	entry: &E, instance: &I, window: &winit::Window
-) -> Result<vk::SurfaceKHR, vk::Result> {
-	use winit::os::unix::WindowExt;
-	let x11_display = window.get_xlib_display().unwrap();
-	let x11_window = window.get_xlib_window().unwrap();
-	let x11_create_info = vk::XlibSurfaceCreateInfoKHR::builder()
-		.window(x11_window)
-		.dpy(x11_display as *mut vk::Display);
-
-	let xlib_surface_loader = XlibSurface::new(entry, instance);
-	xlib_surface_loader.create_xlib_surface(&x11_create_info, None)
-}
-
-#[cfg(target_os = "macos")]
-unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
-	entry: &E, instance: &I, window: &winit::Window
-) -> Result<vk::SurfaceKHR, vk::Result> {
-	use std::ptr;
-	use winit::os::macos::WindowExt;
-
-	let wnd: cocoa_id = mem::transmute(window.get_nswindow());
-
-	let layer = CoreAnimationLayer::new();
-
-	layer.set_edge_antialiasing_mask(0);
-	layer.set_presents_with_transaction(false);
-	layer.remove_all_animations();
-
-	let view = wnd.contentView();
-
-	layer.set_contents_scale(view.backingScaleFactor());
-	view.setLayer(mem::transmute(layer.as_ref()));
-	view.setWantsLayer(YES);
-
-	let create_info = vk::MacOSSurfaceCreateInfoMVK {
-		s_type: vk::StructureType::MACOS_SURFACE_CREATE_INFO_M,
-		p_next: ptr::null(),
-		flags: Default::default(),
-		p_view: window.get_nsview() as *const c_void
-	};
-
-	let macos_surface_loader = MacOSSurface::new(entry, instance);
-	macos_surface_loader.create_mac_os_surface_mvk(&create_info, None)
-}
-
-#[cfg(target_os = "windows")]
-unsafe fn create_surface<E: EntryV1_0, I: InstanceV1_0>(
-	entry: &E, instance: &I, window: &winit::Window
-) -> Result<vk::SurfaceKHR, vk::Result> {
-	use std::ptr;
-	use winapi::{shared::windef::HWND, um::libloaderapi::GetModuleHandleW};
-	use winit::os::windows::WindowExt;
-
-	let hwnd = window.get_hwnd() as HWND;
-	let hinstance = GetModuleHandleW(ptr::null()) as *const c_void;
-	let win32_create_info = vk::Win32SurfaceCreateInfoKHR {
-		s_type: vk::StructureType::WIN32_SURFACE_CREATE_INFO_KHR,
-		p_next: ptr::null(),
-		flags: Default::default(),
-		hinstance,
-		hwnd: hwnd as *const c_void
-	};
-	let win32_surface_loader = Win32Surface::new(entry, instance);
-	win32_surface_loader.create_win32_surface(&win32_create_info, None)
-}
-
-#[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
-fn extension_names() -> impl AsRef<[&'static CStr]> {
-	&[Surface::name(), XlibSurface::name(), DebugReport::name()]
-}
-
-#[cfg(target_os = "macos")]
-fn extension_names() -> impl AsRef<[&'static CStr]> {
-	[Surface::name(), MacOSSurface::name(), DebugReport::name()]
-}
-
-#[cfg(all(windows))]
-fn extension_names() -> impl AsRef<[&'static CStr]> {
-	&[Surface::name(), Win32Surface::name(), DebugReport::name()]
-}
-
 pub fn find_memorytype_index(
 	memory_req: &vk::MemoryRequirements, memory_prop: &PhysicalDeviceMemoryProperties,
 	flags: vk::MemoryPropertyFlags
@@ -223,15 +115,13 @@ pub struct ExampleBase {
 	pub instance: Vrc<Instance>, //
 	pub device: Vrc<Device>,     //
 
-	pub surface_loader: Surface,
 	pub swapchain_loader: Swapchain,
-	pub window: winit::Window,
-	pub events_loop: RefCell<winit::EventsLoop>,
+	pub events_loop: RefCell<EventLoop<()>>,
 
 	pub device_memory_properties: PhysicalDeviceMemoryProperties, //
 	pub present_queue: Vrc<Queue>,                                //
 
-	pub surface: vk::SurfaceKHR,
+	pub surface: vulkayes_window::winit::Surface, //
 	pub surface_format: vk::SurfaceFormatKHR,
 	pub surface_resolution: vk::Extent2D,
 
@@ -253,22 +143,19 @@ pub struct ExampleBase {
 
 impl ExampleBase {
 	pub fn render_loop<F: Fn()>(&self, f: F) {
-		use winit::*;
-		self.events_loop.borrow_mut().run_forever(|event| {
+		use winit::platform::desktop::EventLoopExtDesktop;
+		use winit::event::{Event, WindowEvent};
+
+		self.events_loop.borrow_mut().run_return(|event, _target, control_flow| {
+			// Run update
 			f();
+
+			// Handle window close event
 			match event {
-				Event::WindowEvent { event, .. } => match event {
-					WindowEvent::KeyboardInput { input, .. } => {
-						if let Some(VirtualKeyCode::Escape) = input.virtual_keycode {
-							ControlFlow::Break
-						} else {
-							ControlFlow::Continue
-						}
-					}
-					WindowEvent::CloseRequested => winit::ControlFlow::Break,
-					_ => ControlFlow::Continue
-				},
-				_ => ControlFlow::Continue
+				Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
+					*control_flow = winit::event_loop::ControlFlow::Exit;
+				}
+				_ => ()
 			}
 		});
 	}
@@ -281,10 +168,10 @@ impl ExampleBase {
 		logger.init_boxed().expect("Could not initialize logger");
 
 		unsafe {
-			let events_loop = winit::EventsLoop::new();
-			let window = winit::WindowBuilder::new()
+			let events_loop =  EventLoop::new();
+			let window = winit::window::WindowBuilder::new()
 				.with_title("Ash - Example")
-				.with_dimensions(winit::dpi::LogicalSize::new(
+				.with_inner_size(winit::dpi::LogicalSize::new(
 					f64::from(window_width),
 					f64::from(window_height)
 				))
@@ -302,15 +189,23 @@ impl ExampleBase {
 					..Default::default()
 				},
 				["VK_LAYER_LUNARG_standard_validation"].iter().map(|&s| s),
-				extension_names().as_ref().iter().map(|&cstr| cstr.to_str().unwrap()),
+				vulkayes_window::winit::required_surface_extensions().as_ref()
+					.iter().map(|&s| s)
+					.chain(
+						std::iter::once(
+							ash::extensions::ext::DebugReport::name().to_str().unwrap()
+						)
+					),
 				Default::default(),
-				vcore::instance::debug::DebugCallback::Default()
+				vulkayes_core::instance::debug::DebugCallback::Default()
 			)
 			.expect("Could not create instance");
 
-			let surface =
-				create_surface(instance.entry().deref(), instance.deref().deref(), &window)
-					.unwrap();
+			let surface = vulkayes_window::winit::create_surface(
+				instance.clone(),
+				window,
+				Default::default()
+			).expect("Could not create surface");
 
 			let pdevices = instance.physical_devices().expect("Physical device enumeration error");
 
@@ -328,7 +223,7 @@ impl ExampleBase {
 									&& surface_loader.get_physical_device_surface_support(
 										*pdevice,
 										index as u32,
-										surface
+										*surface
 									);
 
 							if supports_graphic_and_surface {
@@ -344,7 +239,7 @@ impl ExampleBase {
 
 			let (device, mut queues) = Device::new(
 				instance.clone(),
-				[vcore::device::QueueCreateInfo {
+				[vulkayes_core::device::QueueCreateInfo {
 					queue_family_index: queue_family_index as u32,
 					flags: Default::default(),
 					queue_priorities: [1.0]
@@ -360,7 +255,7 @@ impl ExampleBase {
 			let present_queue = queues.remove(0);
 
 			let surface_formats = surface_loader
-				.get_physical_device_surface_formats(*device.physical_device().deref(), surface)
+				.get_physical_device_surface_formats(*device.physical_device().deref(), *surface)
 				.unwrap();
 			let surface_format = surface_formats
 				.iter()
@@ -376,7 +271,7 @@ impl ExampleBase {
 			let surface_capabilities = surface_loader
 				.get_physical_device_surface_capabilities(
 					*device.physical_device().deref(),
-					surface
+					*surface
 				)
 				.unwrap();
 			let mut desired_image_count = surface_capabilities.min_image_count + 1;
@@ -400,7 +295,7 @@ impl ExampleBase {
 			let present_modes = surface_loader
 				.get_physical_device_surface_present_modes(
 					*device.physical_device().deref(),
-					surface
+					*surface
 				)
 				.unwrap();
 			let present_mode = present_modes
@@ -411,7 +306,7 @@ impl ExampleBase {
 			let swapchain_loader = Swapchain::new(instance.deref().deref(), device.deref().deref());
 
 			let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
-				.surface(surface)
+				.surface(*surface)
 				.min_image_count(desired_image_count)
 				.image_color_space(surface_format.color_space)
 				.image_format(surface_format.format)
@@ -565,8 +460,6 @@ impl ExampleBase {
 				instance,
 				device,
 				device_memory_properties,
-				window,
-				surface_loader,
 				surface_format,
 				present_queue,
 				surface_resolution,
@@ -595,9 +488,10 @@ impl Drop for ExampleBase {
 
 			self.device.destroy_semaphore(self.present_complete_semaphore, None);
 			self.device.destroy_semaphore(self.rendering_complete_semaphore, None);
-			self.device.free_memory(self.depth_image_memory, None);
+
 			self.device.destroy_image_view(self.depth_image_view, None);
 			self.device.destroy_image(self.depth_image, None);
+			self.device.free_memory(self.depth_image_memory, None);
 
 			for &image_view in self.present_image_views.iter() {
 				self.device.destroy_image_view(image_view, None);
@@ -605,7 +499,6 @@ impl Drop for ExampleBase {
 
 			self.device.destroy_command_pool(self.pool, None);
 			self.swapchain_loader.destroy_swapchain(self.swapchain, None);
-			self.surface_loader.destroy_surface(self.surface, None);
 		}
 	}
 }

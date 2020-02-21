@@ -1,9 +1,9 @@
-use ash::{util::*, vk};
+use std::{default::Default, ffi::CString, io::Cursor, mem, mem::align_of, ops::Deref};
+
+use ash::{util::*, vk, version::DeviceV1_0};
 use vulkayes_core::ash;
 
 use examples::*;
-
-use std::{default::Default, ffi::CString, io::Cursor, mem, mem::align_of, ops::Deref};
 
 #[derive(Clone, Debug, Copy)]
 struct Vertex {
@@ -60,7 +60,7 @@ fn main() {
 			.subpasses(&subpasses)
 			.dependencies(&dependencies);
 
-		let renderpass = base.device.create_render_pass(&renderpass_create_info, None).unwrap();
+		let renderpass = base.device.deref().create_render_pass(&renderpass_create_info, None).unwrap();
 
 		let framebuffers: Vec<vk::Framebuffer> = base
 			.present_image_views
