@@ -7,7 +7,11 @@ edition = "2018"
 [dependencies]
 winit = "0.19.5"
 image = "0.10.4"
-ash = { path = "../ash" }
+
+vulkayes-core = { path = "../vulkayes-core" }
+
+log = "0.4"
+edwardium_logger = "1"
 
 [target.'cfg(windows)'.dependencies]
 winapi = { version = "0.3.4", features = ["windef", "winuser"] }
