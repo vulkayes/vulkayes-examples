@@ -7,7 +7,7 @@ use std::{
 	os::raw::c_void
 };
 
-use vulkayes_core::ash::{util::*, vk};
+use vulkayes_core::ash::{util::*, vk, version::DeviceV1_0};
 
 use examples::*;
 

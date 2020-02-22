@@ -6,7 +6,7 @@ use std::{
 
 use ash::{
 	extensions::{
-		khr::{Surface, Swapchain}
+		khr::{Swapchain}
 	},
 	version::{DeviceV1_0},
 	vk
@@ -116,14 +116,14 @@ pub struct ExampleBase {
 	pub device: Vrc<Device>,     //
 
 	pub swapchain_loader: Swapchain,
-	pub events_loop: RefCell<EventLoop<()>>,
+	pub event_loop: RefCell<EventLoop<()>>, //
 
 	pub device_memory_properties: PhysicalDeviceMemoryProperties, //
 	pub present_queue: Vrc<Queue>,                                //
 
 	pub surface: vulkayes_window::winit::Surface, //
-	pub surface_format: vk::SurfaceFormatKHR,
-	pub surface_resolution: vk::Extent2D,
+	pub surface_format: vk::SurfaceFormatKHR, //
+	pub surface_resolution: vk::Extent2D, //
 
 	pub swapchain: vk::SwapchainKHR,
 	pub present_images: Vec<vk::Image>,
@@ -146,7 +146,7 @@ impl ExampleBase {
 		use winit::platform::desktop::EventLoopExtDesktop;
 		use winit::event::{Event, WindowEvent};
 
-		self.events_loop.borrow_mut().run_return(|event, _target, control_flow| {
+		self.event_loop.borrow_mut().run_return(|event, _target, control_flow| {
 			// Run update
 			f();
 
@@ -161,148 +161,118 @@ impl ExampleBase {
 	}
 
 	pub fn new(window_width: u32, window_height: u32) -> Self {
+		// Register a logger since Vulkayes logs through the log crate
 		let logger = edwardium_logger::Logger::new(
 			[edwardium_logger::targets::stderr::StderrTarget::new(log::Level::Trace)],
 			std::time::Instant::now()
 		);
 		logger.init_boxed().expect("Could not initialize logger");
 
-		unsafe {
-			let events_loop =  EventLoop::new();
-			let window = winit::window::WindowBuilder::new()
-				.with_title("Ash - Example")
-				.with_inner_size(winit::dpi::LogicalSize::new(
-					f64::from(window_width),
-					f64::from(window_height)
-				))
-				.build(&events_loop)
-				.unwrap();
+		let event_loop =  EventLoop::new();
+		let window = winit::window::WindowBuilder::new()
+			.with_title("Ash - Example")
+			.with_inner_size(winit::dpi::LogicalSize::new(
+				f64::from(window_width),
+				f64::from(window_height)
+			))
+			.build(&event_loop)
+			.unwrap();
 
-			let entry = Entry::new().unwrap();
+		// Create Entry, which is the entry point into the Vulkan API.
+		// The default entry is loaded as a dynamic library.
+		let entry = Entry::new().unwrap();
 
-			let instance = Instance::new(
-				entry,
-				ApplicationInfo {
-					application_name: "VulkanTriangle",
-					engine_name: "VulkanTriangle",
-					api_version: VkVersion::new(1, 0, 0),
-					..Default::default()
-				},
-				["VK_LAYER_LUNARG_standard_validation"].iter().map(|&s| s),
-				vulkayes_window::winit::required_surface_extensions().as_ref()
-					.iter().map(|&s| s)
-					.chain(
-						std::iter::once(
-							ash::extensions::ext::DebugReport::name().to_str().unwrap()
+		// Create instance from loaded entry
+		// Also enable validation layers and require surface extensions as defined in vulkayes_window
+		// Lastly, register Default debug callbacks that log using the log crate
+		let instance = Instance::new(
+			entry,
+			ApplicationInfo {
+				application_name: "VulkanTriangle",
+				engine_name: "VulkanTriangle",
+				api_version: VkVersion::new(1, 0, 0),
+				..Default::default()
+			},
+			["VK_LAYER_LUNARG_standard_validation"].iter().map(|&s| s),
+			vulkayes_window::winit::required_surface_extensions().as_ref()
+				.iter().map(|&s| s)
+				.chain(
+					std::iter::once(
+						ash::extensions::ext::DebugReport::name().to_str().unwrap()
+					)
+				),
+			Default::default(),
+			vulkayes_core::instance::debug::DebugCallback::Default()
+		)
+		.expect("Could not create instance");
+
+		// Create a surface using the vulkayes_window::winit feature
+		let surface = vulkayes_window::winit::create_surface(
+			instance.clone(),
+			window,
+			Default::default()
+		).expect("Could not create surface");
+
+		let pdevices = instance.physical_devices().expect("Physical device enumeration error");
+		let (physical_device, queue_family_index) = pdevices
+			.filter_map(|physical_device| {
+				for (queue_family_index, info) in physical_device.queue_family_properties().into_iter().enumerate() {
+					let supports_graphics = info.queue_flags.contains(vk::QueueFlags::GRAPHICS);
+					let supports_surface = surface.physical_device_surface_support(&physical_device, queue_family_index as u32).unwrap();
+
+					if supports_graphics && supports_surface {
+						return Some(
+							(physical_device, queue_family_index)
 						)
-					),
-				Default::default(),
-				vulkayes_core::instance::debug::DebugCallback::Default()
-			)
-			.expect("Could not create instance");
+					}
+				}
 
-			let surface = vulkayes_window::winit::create_surface(
-				instance.clone(),
-				window,
-				Default::default()
-			).expect("Could not create surface");
+				None
+			})
+		.nth(0).expect("Couldn't find suitable device.");
 
-			let pdevices = instance.physical_devices().expect("Physical device enumeration error");
+		let (device, mut queues) = Device::new(
+			physical_device,
+			[vulkayes_core::device::QueueCreateInfo {
+				queue_family_index: queue_family_index as u32,
+				flags: Default::default(),
+				queue_priorities: [1.0]
+			}],
+			None,
+			[Swapchain::name().to_str().unwrap()].iter().map(|&s| s),
+			vk::PhysicalDeviceFeatures { shader_clip_distance: 1, ..Default::default() },
+			Default::default()
+		)
+		.expect("Could not create device");
 
-			let surface_loader = Surface::new(instance.entry().deref(), instance.deref().deref());
+		let present_queue = queues.drain(..).nth(0).unwrap();
 
-			let (pdevice, queue_family_index) = pdevices
-				.filter_map(|pdevice| {
-					pdevice
-						.queue_family_properties()
-						.iter()
-						.enumerate()
-						.filter_map(|(index, ref info)| {
-							let supports_graphic_and_surface =
-								info.queue_flags.contains(vk::QueueFlags::GRAPHICS)
-									&& surface_loader.get_physical_device_surface_support(
-										*pdevice,
-										index as u32,
-										*surface
-									);
+		let surface_format = surface.physical_device_surface_formats(device.physical_device()).unwrap()
+			.drain(..).nth(0).expect("Unable to find suitable surface format.");
+		let surface_capabilities = surface.physical_device_surface_capabilities(device.physical_device()).unwrap();
 
-							if supports_graphic_and_surface {
-								Some((pdevice.clone(), index))
-							} else {
-								None
-							}
-						})
-						.nth(0)
-				})
-				.nth(0)
-				.expect("Couldn't find suitable device.");
+		let mut desired_image_count = surface_capabilities.min_image_count + 1;
+		if surface_capabilities.max_image_count > 0
+			&& desired_image_count > surface_capabilities.max_image_count
+		{
+			desired_image_count = surface_capabilities.max_image_count;
+		}
+		let surface_resolution = match surface_capabilities.current_extent.width {
+			std::u32::MAX => vk::Extent2D { width: window_width, height: window_height },
+			_ => surface_capabilities.current_extent
+		};
+		let pre_transform = if surface_capabilities
+			.supported_transforms
+			.contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
+		{
+			vk::SurfaceTransformFlagsKHR::IDENTITY
+		} else {
+			surface_capabilities.current_transform
+		};
+		let present_mode = surface.physical_device_surface_present_modes(device.physical_device()).unwrap()
+			.into_iter().find(|&mode| mode == vk::PresentModeKHR::MAILBOX).unwrap_or(vk::PresentModeKHR::FIFO);
 
-			let (device, mut queues) = Device::new(
-				instance.clone(),
-				[vulkayes_core::device::QueueCreateInfo {
-					queue_family_index: queue_family_index as u32,
-					flags: Default::default(),
-					queue_priorities: [1.0]
-				}],
-				None,
-				[Swapchain::name().to_str().unwrap()].iter().map(|&s| s),
-				vk::PhysicalDeviceFeatures { shader_clip_distance: 1, ..Default::default() },
-				pdevice,
-				Default::default()
-			)
-			.expect("Could not create device");
-
-			let present_queue = queues.remove(0);
-
-			let surface_formats = surface_loader
-				.get_physical_device_surface_formats(*device.physical_device().deref(), *surface)
-				.unwrap();
-			let surface_format = surface_formats
-				.iter()
-				.map(|sfmt| match sfmt.format {
-					vk::Format::UNDEFINED => vk::SurfaceFormatKHR {
-						format: vk::Format::B8G8R8_UNORM,
-						color_space: sfmt.color_space
-					},
-					_ => *sfmt
-				})
-				.nth(0)
-				.expect("Unable to find suitable surface format.");
-			let surface_capabilities = surface_loader
-				.get_physical_device_surface_capabilities(
-					*device.physical_device().deref(),
-					*surface
-				)
-				.unwrap();
-			let mut desired_image_count = surface_capabilities.min_image_count + 1;
-			if surface_capabilities.max_image_count > 0
-				&& desired_image_count > surface_capabilities.max_image_count
-			{
-				desired_image_count = surface_capabilities.max_image_count;
-			}
-			let surface_resolution = match surface_capabilities.current_extent.width {
-				std::u32::MAX => vk::Extent2D { width: window_width, height: window_height },
-				_ => surface_capabilities.current_extent
-			};
-			let pre_transform = if surface_capabilities
-				.supported_transforms
-				.contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
-			{
-				vk::SurfaceTransformFlagsKHR::IDENTITY
-			} else {
-				surface_capabilities.current_transform
-			};
-			let present_modes = surface_loader
-				.get_physical_device_surface_present_modes(
-					*device.physical_device().deref(),
-					*surface
-				)
-				.unwrap();
-			let present_mode = present_modes
-				.iter()
-				.cloned()
-				.find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
-				.unwrap_or(vk::PresentModeKHR::FIFO);
+		unsafe {
 			let swapchain_loader = Swapchain::new(instance.deref().deref(), device.deref().deref());
 
 			let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
@@ -456,7 +426,7 @@ impl ExampleBase {
 			let rendering_complete_semaphore =
 				device.create_semaphore(&semaphore_create_info, None).unwrap();
 			ExampleBase {
-				events_loop: RefCell::new(events_loop),
+				event_loop: RefCell::new(event_loop),
 				instance,
 				device,
 				device_memory_properties,
