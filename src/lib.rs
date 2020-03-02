@@ -1,17 +1,11 @@
 use std::{
 	cell::RefCell,
 	default::Default,
+	num::NonZeroU32,
 	ops::{Deref, Drop}
 };
 
-use ash::{
-	extensions::{
-		khr::{Swapchain}
-	},
-	version::{DeviceV1_0},
-	vk
-};
-
+use ash::{version::DeviceV1_0, vk};
 use vulkayes_core::{
 	ash,
 	device::Device,
@@ -19,10 +13,11 @@ use vulkayes_core::{
 	instance::{ApplicationInfo, Instance},
 	physical_device::enumerate::PhysicalDeviceMemoryProperties,
 	queue::Queue,
-	util::fmt::VkVersion,
+	resource::ImageSize,
+	swapchain::{Swapchain, SwapchainCreateImageInfo, SwapchainImage},
+	util::{fmt::VkVersion, SharingMode},
 	Vrc
 };
-
 use vulkayes_window::winit::winit;
 use winit::event_loop::EventLoop;
 
@@ -39,13 +34,20 @@ macro_rules! offset_of {
 }
 
 pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffer)>(
-	device: &D, command_buffer: vk::CommandBuffer, submit_queue: vk::Queue,
-	wait_mask: &[vk::PipelineStageFlags], wait_semaphores: &[vk::Semaphore],
-	signal_semaphores: &[vk::Semaphore], f: F
+	device: &D,
+	command_buffer: vk::CommandBuffer,
+	submit_queue: vk::Queue,
+	wait_mask: &[vk::PipelineStageFlags],
+	wait_semaphores: &[vk::Semaphore],
+	signal_semaphores: &[vk::Semaphore],
+	f: F
 ) {
 	unsafe {
 		device
-			.reset_command_buffer(command_buffer, vk::CommandBufferResetFlags::RELEASE_RESOURCES)
+			.reset_command_buffer(
+				command_buffer,
+				vk::CommandBufferResetFlags::RELEASE_RESOURCES
+			)
 			.expect("Reset command buffer failed.");
 
 		let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
@@ -55,7 +57,9 @@ pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffe
 			.begin_command_buffer(command_buffer, &command_buffer_begin_info)
 			.expect("Begin commandbuffer");
 		f(device, command_buffer);
-		device.end_command_buffer(command_buffer).expect("End commandbuffer");
+		device
+			.end_command_buffer(command_buffer)
+			.expect("End commandbuffer");
 
 		let submit_fence = device
 			.create_fence(&vk::FenceCreateInfo::default(), None)
@@ -80,7 +84,8 @@ pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffe
 }
 
 pub fn find_memorytype_index(
-	memory_req: &vk::MemoryRequirements, memory_prop: &PhysicalDeviceMemoryProperties,
+	memory_req: &vk::MemoryRequirements,
+	memory_prop: &PhysicalDeviceMemoryProperties,
 	flags: vk::MemoryPropertyFlags
 ) -> Option<u32> {
 	// Try to find an exactly matching memory flag
@@ -98,8 +103,10 @@ pub fn find_memorytype_index(
 }
 
 pub fn find_memorytype_index_f<F: Fn(vk::MemoryPropertyFlags, vk::MemoryPropertyFlags) -> bool>(
-	memory_req: &vk::MemoryRequirements, memory_prop: &PhysicalDeviceMemoryProperties,
-	flags: vk::MemoryPropertyFlags, f: F
+	memory_req: &vk::MemoryRequirements,
+	memory_prop: &PhysicalDeviceMemoryProperties,
+	flags: vk::MemoryPropertyFlags,
+	f: F
 ) -> Option<u32> {
 	let mut memory_type_bits = memory_req.memory_type_bits;
 	for (index, ref memory_type) in memory_prop.memory_types.iter().enumerate() {
@@ -115,18 +122,16 @@ pub struct ExampleBase {
 	pub instance: Vrc<Instance>, //
 	pub device: Vrc<Device>,     //
 
-	pub swapchain_loader: Swapchain,
 	pub event_loop: RefCell<EventLoop<()>>, //
 
 	pub device_memory_properties: PhysicalDeviceMemoryProperties, //
 	pub present_queue: Vrc<Queue>,                                //
 
-	pub surface: vulkayes_window::winit::Surface, //
-	pub surface_format: vk::SurfaceFormatKHR, //
-	pub surface_resolution: vk::Extent2D, //
+	pub window: winit::window::Window, //
+	pub surface_size: ImageSize,
 
-	pub swapchain: vk::SwapchainKHR,
-	pub present_images: Vec<vk::Image>,
+	pub swapchain: Vrc<Swapchain>,                //
+	pub present_images: Vec<Vrc<SwapchainImage>>, //
 	pub present_image_views: Vec<vk::ImageView>,
 
 	pub pool: vk::CommandPool,
@@ -143,32 +148,41 @@ pub struct ExampleBase {
 
 impl ExampleBase {
 	pub fn render_loop<F: Fn()>(&self, f: F) {
-		use winit::platform::desktop::EventLoopExtDesktop;
-		use winit::event::{Event, WindowEvent};
+		use winit::{
+			event::{Event, WindowEvent},
+			platform::desktop::EventLoopExtDesktop
+		};
 
-		self.event_loop.borrow_mut().run_return(|event, _target, control_flow| {
-			// Run update
-			f();
+		self.event_loop
+			.borrow_mut()
+			.run_return(|event, _target, control_flow| {
+				// Run update
+				f();
 
-			// Handle window close event
-			match event {
-				Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
-					*control_flow = winit::event_loop::ControlFlow::Exit;
+				// Handle window close event
+				match event {
+					Event::WindowEvent {
+						event: WindowEvent::CloseRequested,
+						..
+					} => {
+						*control_flow = winit::event_loop::ControlFlow::Exit;
+					}
+					_ => ()
 				}
-				_ => ()
-			}
-		});
+			});
 	}
 
 	pub fn new(window_width: u32, window_height: u32) -> Self {
 		// Register a logger since Vulkayes logs through the log crate
 		let logger = edwardium_logger::Logger::new(
-			[edwardium_logger::targets::stderr::StderrTarget::new(log::Level::Trace)],
+			[edwardium_logger::targets::stderr::StderrTarget::new(
+				log::Level::Trace
+			)],
 			std::time::Instant::now()
 		);
 		logger.init_boxed().expect("Could not initialize logger");
 
-		let event_loop =  EventLoop::new();
+		let event_loop = EventLoop::new();
 		let window = winit::window::WindowBuilder::new()
 			.with_title("Ash - Example")
 			.with_inner_size(winit::dpi::LogicalSize::new(
@@ -194,104 +208,140 @@ impl ExampleBase {
 				..Default::default()
 			},
 			["VK_LAYER_LUNARG_standard_validation"].iter().map(|&s| s),
-			vulkayes_window::winit::required_surface_extensions().as_ref()
-				.iter().map(|&s| s)
-				.chain(
-					std::iter::once(
-						ash::extensions::ext::DebugReport::name().to_str().unwrap()
-					)
-				),
+			vulkayes_window::winit::required_surface_extensions()
+				.as_ref()
+				.iter()
+				.map(|&s| s)
+				.chain(std::iter::once(
+					ash::extensions::ext::DebugReport::name().to_str().unwrap()
+				)),
 			Default::default(),
 			vulkayes_core::instance::debug::DebugCallback::Default()
 		)
 		.expect("Could not create instance");
 
 		// Create a surface using the vulkayes_window::winit feature
-		let surface = vulkayes_window::winit::create_surface(
-			instance.clone(),
-			window,
-			Default::default()
-		).expect("Could not create surface");
+		let surface =
+			vulkayes_window::winit::create_surface(instance.clone(), &window, Default::default())
+				.expect("Could not create surface");
 
-		let pdevices = instance.physical_devices().expect("Physical device enumeration error");
-		let (physical_device, queue_family_index) = pdevices
-			.filter_map(|physical_device| {
-				for (queue_family_index, info) in physical_device.queue_family_properties().into_iter().enumerate() {
-					let supports_graphics = info.queue_flags.contains(vk::QueueFlags::GRAPHICS);
-					let supports_surface = surface.physical_device_surface_support(&physical_device, queue_family_index as u32).unwrap();
+		let (device, present_queue) = {
+			let (physical_device, queue_family_index) = instance
+				.physical_devices()
+				.expect("Physical device enumeration error")
+				.into_iter()
+				.filter_map(|physical_device| {
+					for (queue_family_index, info) in physical_device
+						.queue_family_properties()
+						.into_iter()
+						.enumerate()
+					{
+						let supports_graphics = info.queue_flags.contains(vk::QueueFlags::GRAPHICS);
+						let supports_surface = surface
+							.physical_device_surface_support(
+								&physical_device,
+								queue_family_index as u32
+							)
+							.unwrap();
 
-					if supports_graphics && supports_surface {
-						return Some(
-							(physical_device, queue_family_index)
-						)
+						if supports_graphics && supports_surface {
+							return Some((physical_device, queue_family_index))
+						}
 					}
-				}
 
-				None
-			})
-		.nth(0).expect("Couldn't find suitable device.");
+					None
+				})
+				.nth(0)
+				.expect("Couldn't find suitable device.");
 
-		let (device, mut queues) = Device::new(
-			physical_device,
-			[vulkayes_core::device::QueueCreateInfo {
-				queue_family_index: queue_family_index as u32,
-				flags: Default::default(),
-				queue_priorities: [1.0]
-			}],
-			None,
-			[Swapchain::name().to_str().unwrap()].iter().map(|&s| s),
-			vk::PhysicalDeviceFeatures { shader_clip_distance: 1, ..Default::default() },
-			Default::default()
-		)
-		.expect("Could not create device");
+			let mut device_data = Device::new(
+				physical_device,
+				[vulkayes_core::device::QueueCreateInfo {
+					queue_family_index: queue_family_index as u32,
+					flags: Default::default(),
+					queue_priorities: [1.0]
+				}],
+				None,
+				[ash::extensions::khr::Swapchain::name().to_str().unwrap()]
+					.iter()
+					.map(|&s| s),
+				vk::PhysicalDeviceFeatures {
+					shader_clip_distance: 1,
+					..Default::default()
+				},
+				Default::default()
+			)
+			.expect("Could not create device");
 
-		let present_queue = queues.drain(..).nth(0).unwrap();
+			let present_queue = device_data.queues.drain(..).nth(0).unwrap();
 
-		let surface_format = surface.physical_device_surface_formats(device.physical_device()).unwrap()
-			.drain(..).nth(0).expect("Unable to find suitable surface format.");
-		let surface_capabilities = surface.physical_device_surface_capabilities(device.physical_device()).unwrap();
-
-		let mut desired_image_count = surface_capabilities.min_image_count + 1;
-		if surface_capabilities.max_image_count > 0
-			&& desired_image_count > surface_capabilities.max_image_count
-		{
-			desired_image_count = surface_capabilities.max_image_count;
-		}
-		let surface_resolution = match surface_capabilities.current_extent.width {
-			std::u32::MAX => vk::Extent2D { width: window_width, height: window_height },
-			_ => surface_capabilities.current_extent
+			(device_data.device, present_queue)
 		};
-		let pre_transform = if surface_capabilities
-			.supported_transforms
-			.contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
-		{
-			vk::SurfaceTransformFlagsKHR::IDENTITY
-		} else {
-			surface_capabilities.current_transform
+
+		let (swapchain, present_images) = {
+			let surface_format = surface
+				.physical_device_surface_formats(device.physical_device())
+				.unwrap()
+				.drain(..)
+				.nth(0)
+				.expect("Unable to find suitable surface format.");
+			let surface_capabilities = surface
+				.physical_device_surface_capabilities(device.physical_device())
+				.unwrap();
+
+			let desired_image_count = match surface_capabilities.max_image_count {
+				0 => surface_capabilities.min_image_count + 1,
+				a => (surface_capabilities.min_image_count + 1).min(a)
+			};
+			let surface_resolution = match surface_capabilities.current_extent.width {
+				std::u32::MAX => [
+					NonZeroU32::new(window_width).unwrap(),
+					NonZeroU32::new(window_height).unwrap()
+				],
+				_ => [
+					NonZeroU32::new(surface_capabilities.current_extent.width).unwrap(),
+					NonZeroU32::new(surface_capabilities.current_extent.height).unwrap()
+				]
+			};
+			let pre_transform = if surface_capabilities
+				.supported_transforms
+				.contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
+			{
+				vk::SurfaceTransformFlagsKHR::IDENTITY
+			} else {
+				surface_capabilities.current_transform
+			};
+			let present_mode = surface
+				.physical_device_surface_present_modes(device.physical_device())
+				.unwrap()
+				.into_iter()
+				.find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
+				.unwrap_or(vk::PresentModeKHR::FIFO);
+
+			let swapchain_data = Swapchain::new(
+				device.clone(),
+				surface,
+				SwapchainCreateImageInfo {
+					min_image_count: NonZeroU32::new(desired_image_count).unwrap(),
+					image_format: surface_format.format,
+					image_color_space: surface_format.color_space,
+					image_extent: surface_resolution,
+					image_array_layers: vulkayes_core::NONZEROU32_ONE,
+					image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
+				},
+				SharingMode::<[u32; 0]>::Exclusive,
+				pre_transform,
+				vk::CompositeAlphaFlagsKHR::OPAQUE,
+				present_mode,
+				true,
+				Default::default()
+			)
+			.expect("Could not create swapchain");
+
+			(swapchain_data.swapchain, swapchain_data.images)
 		};
-		let present_mode = surface.physical_device_surface_present_modes(device.physical_device()).unwrap()
-			.into_iter().find(|&mode| mode == vk::PresentModeKHR::MAILBOX).unwrap_or(vk::PresentModeKHR::FIFO);
 
 		unsafe {
-			let swapchain_loader = Swapchain::new(instance.deref().deref(), device.deref().deref());
-
-			let swapchain_create_info = vk::SwapchainCreateInfoKHR::builder()
-				.surface(*surface)
-				.min_image_count(desired_image_count)
-				.image_color_space(surface_format.color_space)
-				.image_format(surface_format.format)
-				.image_extent(surface_resolution)
-				.image_usage(vk::ImageUsageFlags::COLOR_ATTACHMENT)
-				.image_sharing_mode(vk::SharingMode::EXCLUSIVE)
-				.pre_transform(pre_transform)
-				.composite_alpha(vk::CompositeAlphaFlagsKHR::OPAQUE)
-				.present_mode(present_mode)
-				.clipped(true)
-				.image_array_layers(1);
-
-			let swapchain =
-				swapchain_loader.create_swapchain(&swapchain_create_info, None).unwrap();
-
 			let pool_create_info = vk::CommandPoolCreateInfo::builder()
 				.flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
 				.queue_family_index(present_queue.queue_family_index());
@@ -303,18 +353,18 @@ impl ExampleBase {
 				.command_pool(pool)
 				.level(vk::CommandBufferLevel::PRIMARY);
 
-			let command_buffers =
-				device.allocate_command_buffers(&command_buffer_allocate_info).unwrap();
+			let command_buffers = device
+				.allocate_command_buffers(&command_buffer_allocate_info)
+				.unwrap();
 			let setup_command_buffer = command_buffers[0];
 			let draw_command_buffer = command_buffers[1];
 
-			let present_images = swapchain_loader.get_swapchain_images(swapchain).unwrap();
 			let present_image_views: Vec<vk::ImageView> = present_images
 				.iter()
-				.map(|&image| {
+				.map(|image| {
 					let create_view_info = vk::ImageViewCreateInfo::builder()
 						.view_type(vk::ImageViewType::TYPE_2D)
-						.format(surface_format.format)
+						.format(image.format())
 						.components(vk::ComponentMapping {
 							r: vk::ComponentSwizzle::R,
 							g: vk::ComponentSwizzle::G,
@@ -328,7 +378,7 @@ impl ExampleBase {
 							base_array_layer: 0,
 							layer_count: 1
 						})
-						.image(image);
+						.image(*image.deref().deref().deref());
 					device.create_image_view(&create_view_info, None).unwrap()
 				})
 				.collect();
@@ -337,11 +387,7 @@ impl ExampleBase {
 			let depth_image_create_info = vk::ImageCreateInfo::builder()
 				.image_type(vk::ImageType::TYPE_2D)
 				.format(vk::Format::D16_UNORM)
-				.extent(vk::Extent3D {
-					width: surface_resolution.width,
-					height: surface_resolution.height,
-					depth: 1
-				})
+				.extent(present_images[0].size().into())
 				.mip_levels(1)
 				.array_layers(1)
 				.samples(vk::SampleCountFlags::TYPE_1)
@@ -362,8 +408,9 @@ impl ExampleBase {
 				.allocation_size(depth_image_memory_req.size)
 				.memory_type_index(depth_image_memory_index);
 
-			let depth_image_memory =
-				device.allocate_memory(&depth_image_allocate_info, None).unwrap();
+			let depth_image_memory = device
+				.allocate_memory(&depth_image_allocate_info, None)
+				.unwrap();
 
 			device
 				.bind_image_memory(depth_image, depth_image_memory, 0)
@@ -417,24 +464,26 @@ impl ExampleBase {
 				.format(depth_image_create_info.format)
 				.view_type(vk::ImageViewType::TYPE_2D);
 
-			let depth_image_view = device.create_image_view(&depth_image_view_info, None).unwrap();
+			let depth_image_view = device
+				.create_image_view(&depth_image_view_info, None)
+				.unwrap();
 
 			let semaphore_create_info = vk::SemaphoreCreateInfo::default();
 
-			let present_complete_semaphore =
-				device.create_semaphore(&semaphore_create_info, None).unwrap();
-			let rendering_complete_semaphore =
-				device.create_semaphore(&semaphore_create_info, None).unwrap();
+			let present_complete_semaphore = device
+				.create_semaphore(&semaphore_create_info, None)
+				.unwrap();
+			let rendering_complete_semaphore = device
+				.create_semaphore(&semaphore_create_info, None)
+				.unwrap();
 			ExampleBase {
 				event_loop: RefCell::new(event_loop),
 				instance,
 				device,
 				device_memory_properties,
-				surface_format,
 				present_queue,
-				surface_resolution,
-				swapchain_loader,
 				swapchain,
+				surface_size: present_images[0].size(),
 				present_images,
 				present_image_views,
 				pool,
@@ -444,7 +493,7 @@ impl ExampleBase {
 				depth_image_view,
 				present_complete_semaphore,
 				rendering_complete_semaphore,
-				surface,
+				window,
 				depth_image_memory
 			}
 		}
@@ -456,8 +505,10 @@ impl Drop for ExampleBase {
 		unsafe {
 			self.device.device_wait_idle().unwrap();
 
-			self.device.destroy_semaphore(self.present_complete_semaphore, None);
-			self.device.destroy_semaphore(self.rendering_complete_semaphore, None);
+			self.device
+				.destroy_semaphore(self.present_complete_semaphore, None);
+			self.device
+				.destroy_semaphore(self.rendering_complete_semaphore, None);
 
 			self.device.destroy_image_view(self.depth_image_view, None);
 			self.device.destroy_image(self.depth_image, None);
@@ -468,7 +519,6 @@ impl Drop for ExampleBase {
 			}
 
 			self.device.destroy_command_pool(self.pool, None);
-			self.swapchain_loader.destroy_swapchain(self.swapchain, None);
 		}
 	}
 }

@@ -1,6 +1,6 @@
 use std::{default::Default, ffi::CString, io::Cursor, mem, mem::align_of, ops::Deref};
 
-use ash::{util::*, vk, version::DeviceV1_0};
+use ash::{util::*, version::DeviceV1_0, vk};
 use vulkayes_core::ash;
 
 use examples::*;
@@ -16,7 +16,7 @@ fn main() {
 		let base = ExampleBase::new(1920, 1080);
 		let renderpass_attachments = [
 			vk::AttachmentDescription {
-				format: base.surface_format.format,
+				format: base.present_images[0].format(),
 				samples: vk::SampleCountFlags::TYPE_1,
 				load_op: vk::AttachmentLoadOp::CLEAR,
 				store_op: vk::AttachmentStoreOp::STORE,
@@ -60,7 +60,11 @@ fn main() {
 			.subpasses(&subpasses)
 			.dependencies(&dependencies);
 
-		let renderpass = base.device.deref().create_render_pass(&renderpass_create_info, None).unwrap();
+		let renderpass = base
+			.device
+			.deref()
+			.create_render_pass(&renderpass_create_info, None)
+			.unwrap();
 
 		let framebuffers: Vec<vk::Framebuffer> = base
 			.present_image_views
@@ -70,11 +74,13 @@ fn main() {
 				let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
 					.render_pass(renderpass)
 					.attachments(&framebuffer_attachments)
-					.width(base.surface_resolution.width)
-					.height(base.surface_resolution.height)
+					.width(base.surface_size.width().get())
+					.height(base.surface_size.height().get())
 					.layers(1);
 
-				base.device.create_framebuffer(&frame_buffer_create_info, None).unwrap()
+				base.device
+					.create_framebuffer(&frame_buffer_create_info, None)
+					.unwrap()
 			})
 			.collect();
 
@@ -98,7 +104,10 @@ fn main() {
 			memory_type_index: index_buffer_memory_index,
 			..Default::default()
 		};
-		let index_buffer_memory = base.device.allocate_memory(&index_allocate_info, None).unwrap();
+		let index_buffer_memory = base
+			.device
+			.allocate_memory(&index_allocate_info, None)
+			.unwrap();
 		let index_ptr = base
 			.device
 			.map_memory(
@@ -108,11 +117,16 @@ fn main() {
 				vk::MemoryMapFlags::empty()
 			)
 			.unwrap();
-		let mut index_slice =
-			Align::new(index_ptr, align_of::<u32>() as u64, index_buffer_memory_req.size);
+		let mut index_slice = Align::new(
+			index_ptr,
+			align_of::<u32>() as u64,
+			index_buffer_memory_req.size
+		);
 		index_slice.copy_from_slice(&index_buffer_data);
 		base.device.unmap_memory(index_buffer_memory);
-		base.device.bind_buffer_memory(index_buffer, index_buffer_memory, 0).unwrap();
+		base.device
+			.bind_buffer_memory(index_buffer, index_buffer_memory, 0)
+			.unwrap();
 
 		let vertex_input_buffer_info = vk::BufferCreateInfo {
 			size: 3 * std::mem::size_of::<Vertex>() as u64,
@@ -121,11 +135,14 @@ fn main() {
 			..Default::default()
 		};
 
-		let vertex_input_buffer =
-			base.device.create_buffer(&vertex_input_buffer_info, None).unwrap();
+		let vertex_input_buffer = base
+			.device
+			.create_buffer(&vertex_input_buffer_info, None)
+			.unwrap();
 
-		let vertex_input_buffer_memory_req =
-			base.device.get_buffer_memory_requirements(vertex_input_buffer);
+		let vertex_input_buffer_memory_req = base
+			.device
+			.get_buffer_memory_requirements(vertex_input_buffer);
 
 		let vertex_input_buffer_memory_index = find_memorytype_index(
 			&vertex_input_buffer_memory_req,
@@ -140,13 +157,24 @@ fn main() {
 			..Default::default()
 		};
 
-		let vertex_input_buffer_memory =
-			base.device.allocate_memory(&vertex_buffer_allocate_info, None).unwrap();
+		let vertex_input_buffer_memory = base
+			.device
+			.allocate_memory(&vertex_buffer_allocate_info, None)
+			.unwrap();
 
 		let vertices = [
-			Vertex { pos: [-1.0, 1.0, 0.0, 1.0], color: [0.0, 1.0, 0.0, 1.0] },
-			Vertex { pos: [1.0, 1.0, 0.0, 1.0], color: [0.0, 0.0, 1.0, 1.0] },
-			Vertex { pos: [0.0, -1.0, 0.0, 1.0], color: [1.0, 0.0, 0.0, 1.0] }
+			Vertex {
+				pos: [-1.0, 1.0, 0.0, 1.0],
+				color: [0.0, 1.0, 0.0, 1.0]
+			},
+			Vertex {
+				pos: [1.0, 1.0, 0.0, 1.0],
+				color: [0.0, 0.0, 1.0, 1.0]
+			},
+			Vertex {
+				pos: [0.0, -1.0, 0.0, 1.0],
+				color: [1.0, 0.0, 0.0, 1.0]
+			}
 		];
 
 		let vert_ptr = base
@@ -159,11 +187,16 @@ fn main() {
 			)
 			.unwrap();
 
-		let mut vert_align =
-			Align::new(vert_ptr, align_of::<Vertex>() as u64, vertex_input_buffer_memory_req.size);
+		let mut vert_align = Align::new(
+			vert_ptr,
+			align_of::<Vertex>() as u64,
+			vertex_input_buffer_memory_req.size
+		);
 		vert_align.copy_from_slice(&vertices);
 		base.device.unmap_memory(vertex_input_buffer_memory);
-		base.device.bind_buffer_memory(vertex_input_buffer, vertex_input_buffer_memory, 0).unwrap();
+		base.device
+			.bind_buffer_memory(vertex_input_buffer, vertex_input_buffer_memory, 0)
+			.unwrap();
 		let mut vertex_spv_file =
 			Cursor::new(&include_bytes!("../../shader/triangle/vert.spv")[..]);
 		let mut frag_spv_file = Cursor::new(&include_bytes!("../../shader/triangle/frag.spv")[..]);
@@ -188,8 +221,10 @@ fn main() {
 
 		let layout_create_info = vk::PipelineLayoutCreateInfo::default();
 
-		let pipeline_layout =
-			base.device.create_pipeline_layout(&layout_create_info, None).unwrap();
+		let pipeline_layout = base
+			.device
+			.create_pipeline_layout(&layout_create_info, None)
+			.unwrap();
 
 		let shader_entry_name = CString::new("main").unwrap();
 		let shader_stage_create_infos = [
@@ -241,13 +276,15 @@ fn main() {
 		let viewports = [vk::Viewport {
 			x: 0.0,
 			y: 0.0,
-			width: base.surface_resolution.width as f32,
-			height: base.surface_resolution.height as f32,
+			width: base.surface_size.width().get() as f32,
+			height: base.surface_size.height().get() as f32,
 			min_depth: 0.0,
 			max_depth: 1.0
 		}];
-		let scissors =
-			[vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: base.surface_resolution }];
+		let scissors = [vk::Rect2D {
+			offset: vk::Offset2D { x: 0, y: 0 },
+			extent: base.surface_size.into()
+		}];
 		let viewport_state_info = vk::PipelineViewportStateCreateInfo::builder()
 			.scissors(&scissors)
 			.viewports(&viewports);
@@ -322,18 +359,26 @@ fn main() {
 
 		base.render_loop(|| {
 			let (present_index, _) = base
-				.swapchain_loader
+				.swapchain
+				.loader()
 				.acquire_next_image(
-					base.swapchain,
+					*base.swapchain.deref().deref(),
 					std::u64::MAX,
 					base.present_complete_semaphore,
 					vk::Fence::null()
 				)
 				.unwrap();
 			let clear_values = [
-				vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 0.0] } },
 				vk::ClearValue {
-					depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 }
+					color: vk::ClearColorValue {
+						float32: [0.0, 0.0, 0.0, 0.0]
+					}
+				},
+				vk::ClearValue {
+					depth_stencil: vk::ClearDepthStencilValue {
+						depth: 1.0,
+						stencil: 0
+					}
 				}
 			];
 
@@ -342,7 +387,7 @@ fn main() {
 				.framebuffer(framebuffers[present_index as usize])
 				.render_area(vk::Rect2D {
 					offset: vk::Offset2D { x: 0, y: 0 },
-					extent: base.surface_resolution
+					extent: base.surface_size.into()
 				})
 				.clear_values(&clear_values);
 
@@ -391,16 +436,17 @@ fn main() {
 					device.cmd_end_render_pass(draw_command_buffer);
 				}
 			);
-			//let mut present_info_err = mem::zeroed();
+			// let mut present_info_err = mem::zeroed();
 			let wait_semaphors = [base.rendering_complete_semaphore];
-			let swapchains = [base.swapchain];
+			let swapchains = [*base.swapchain.deref().deref()];
 			let image_indices = [present_index];
 			let present_info = vk::PresentInfoKHR::builder()
 				.wait_semaphores(&wait_semaphors) // &base.rendering_complete_semaphore)
 				.swapchains(&swapchains)
 				.image_indices(&image_indices);
 
-			base.swapchain_loader
+			base.swapchain
+				.loader()
 				.queue_present(*base.present_queue.deref().deref(), &present_info)
 				.unwrap();
 		});
@@ -410,8 +456,10 @@ fn main() {
 			base.device.destroy_pipeline(pipeline, None);
 		}
 		base.device.destroy_pipeline_layout(pipeline_layout, None);
-		base.device.destroy_shader_module(vertex_shader_module, None);
-		base.device.destroy_shader_module(fragment_shader_module, None);
+		base.device
+			.destroy_shader_module(vertex_shader_module, None);
+		base.device
+			.destroy_shader_module(fragment_shader_module, None);
 		base.device.free_memory(index_buffer_memory, None);
 		base.device.destroy_buffer(index_buffer, None);
 		base.device.free_memory(vertex_input_buffer_memory, None);
