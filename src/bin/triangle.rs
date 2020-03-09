@@ -393,38 +393,38 @@ fn main() {
 
 			record_submit_commandbuffer(
 				base.device.deref().deref(),
-				base.draw_command_buffer,
-				*base.present_queue.deref().deref(),
+				&base.draw_command_buffer,
+				&base.present_queue,
 				&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
 				&[base.present_complete_semaphore],
 				&[base.rendering_complete_semaphore],
 				|device, draw_command_buffer| {
 					device.cmd_begin_render_pass(
-						draw_command_buffer,
+						*draw_command_buffer.deref().deref(),
 						&render_pass_begin_info,
 						vk::SubpassContents::INLINE
 					);
 					device.cmd_bind_pipeline(
-						draw_command_buffer,
+						*draw_command_buffer.deref().deref(),
 						vk::PipelineBindPoint::GRAPHICS,
 						graphic_pipeline
 					);
-					device.cmd_set_viewport(draw_command_buffer, 0, &viewports);
-					device.cmd_set_scissor(draw_command_buffer, 0, &scissors);
+					device.cmd_set_viewport(*draw_command_buffer.deref().deref(), 0, &viewports);
+					device.cmd_set_scissor(*draw_command_buffer.deref().deref(), 0, &scissors);
 					device.cmd_bind_vertex_buffers(
-						draw_command_buffer,
+						*draw_command_buffer.deref().deref(),
 						0,
 						&[vertex_input_buffer],
 						&[0]
 					);
 					device.cmd_bind_index_buffer(
-						draw_command_buffer,
+						*draw_command_buffer.deref().deref(),
 						index_buffer,
 						0,
 						vk::IndexType::UINT32
 					);
 					device.cmd_draw_indexed(
-						draw_command_buffer,
+						*draw_command_buffer.deref().deref(),
 						index_buffer_data.len() as u32,
 						1,
 						0,
@@ -433,7 +433,7 @@ fn main() {
 					);
 					// Or draw without the index buffer
 					// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
-					device.cmd_end_render_pass(draw_command_buffer);
+					device.cmd_end_render_pass(*draw_command_buffer.deref().deref());
 				}
 			);
 			// let mut present_info_err = mem::zeroed();

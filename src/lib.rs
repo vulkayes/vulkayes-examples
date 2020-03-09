@@ -8,14 +8,15 @@ use std::{
 use ash::{version::DeviceV1_0, vk};
 use vulkayes_core::{
 	ash,
+	command::{pool::CommandPool, buffer::CommandBuffer},
 	device::Device,
 	entry::Entry,
 	instance::{ApplicationInfo, Instance},
 	physical_device::enumerate::PhysicalDeviceMemoryProperties,
-	queue::Queue,
+	queue::{Queue, sharing_mode::SharingMode},
 	resource::ImageSize,
 	swapchain::{Swapchain, SwapchainCreateImageInfo, SwapchainImage},
-	util::{fmt::VkVersion, SharingMode},
+	util::{fmt::VkVersion},
 	Vrc
 };
 use vulkayes_window::winit::winit;
@@ -33,19 +34,20 @@ macro_rules! offset_of {
 		}};
 }
 
-pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffer)>(
+pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, &Vrc<CommandBuffer>)>(
 	device: &D,
-	command_buffer: vk::CommandBuffer,
-	submit_queue: vk::Queue,
+	command_buffer: &Vrc<CommandBuffer>,
+	submit_queue: &Vrc<Queue>,
 	wait_mask: &[vk::PipelineStageFlags],
 	wait_semaphores: &[vk::Semaphore],
 	signal_semaphores: &[vk::Semaphore],
 	f: F
 ) {
 	unsafe {
+		// TODO: Are we sure this is okay? How is the buffer synchronized?
 		device
 			.reset_command_buffer(
-				command_buffer,
+				*command_buffer.deref().deref(),
 				vk::CommandBufferResetFlags::RELEASE_RESOURCES
 			)
 			.expect("Reset command buffer failed.");
@@ -54,18 +56,18 @@ pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffe
 			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
 		device
-			.begin_command_buffer(command_buffer, &command_buffer_begin_info)
+			.begin_command_buffer(*command_buffer.deref().deref(), &command_buffer_begin_info)
 			.expect("Begin commandbuffer");
-		f(device, command_buffer);
+		f(device, &command_buffer);
 		device
-			.end_command_buffer(command_buffer)
+			.end_command_buffer(*command_buffer.deref().deref())
 			.expect("End commandbuffer");
 
 		let submit_fence = device
 			.create_fence(&vk::FenceCreateInfo::default(), None)
 			.expect("Create fence failed.");
 
-		let command_buffers = vec![command_buffer];
+		let command_buffers = [*command_buffer.deref().deref()];
 
 		let submit_info = vk::SubmitInfo::builder()
 			.wait_semaphores(wait_semaphores)
@@ -74,7 +76,7 @@ pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, vk::CommandBuffe
 			.signal_semaphores(signal_semaphores);
 
 		device
-			.queue_submit(submit_queue, &[submit_info.build()], submit_fence)
+			.queue_submit(*submit_queue.deref().deref(), &[submit_info.build()], submit_fence)
 			.expect("queue submit failed.");
 		device
 			.wait_for_fences(&[submit_fence], true, std::u64::MAX)
@@ -134,9 +136,9 @@ pub struct ExampleBase {
 	pub present_images: Vec<Vrc<SwapchainImage>>, //
 	pub present_image_views: Vec<vk::ImageView>,
 
-	pub pool: vk::CommandPool,
-	pub draw_command_buffer: vk::CommandBuffer,
-	pub setup_command_buffer: vk::CommandBuffer,
+	pub command_pool: Vrc<CommandPool>, //
+	pub draw_command_buffer: Vrc<CommandBuffer>, //
+	pub setup_command_buffer: Vrc<CommandBuffer>, //
 
 	pub depth_image: vk::Image,
 	pub depth_image_view: vk::ImageView,
@@ -258,7 +260,6 @@ impl ExampleBase {
 				physical_device,
 				[vulkayes_core::device::QueueCreateInfo {
 					queue_family_index: queue_family_index as u32,
-					flags: Default::default(),
 					queue_priorities: [1.0]
 				}],
 				None,
@@ -329,7 +330,7 @@ impl ExampleBase {
 					image_array_layers: vulkayes_core::NONZEROU32_ONE,
 					image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
 				},
-				SharingMode::<[u32; 0]>::Exclusive,
+				present_queue.deref().into(),
 				pre_transform,
 				vk::CompositeAlphaFlagsKHR::OPAQUE,
 				present_mode,
@@ -341,23 +342,21 @@ impl ExampleBase {
 			(swapchain_data.swapchain, swapchain_data.images)
 		};
 
+		let command_pool = CommandPool::new(
+			present_queue.clone(),
+			vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
+			Default::default()
+		).expect("Could not create command pool");
+
+		let mut command_buffers = CommandBuffer::new(
+			command_pool.clone(),
+			vk::CommandBufferLevel::PRIMARY,
+			std::num::NonZeroU32::new(2).unwrap()
+		).expect("Could not allocate command buffers");
+
 		unsafe {
-			let pool_create_info = vk::CommandPoolCreateInfo::builder()
-				.flags(vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER)
-				.queue_family_index(present_queue.queue_family_index());
-
-			let pool = device.create_command_pool(&pool_create_info, None).unwrap();
-
-			let command_buffer_allocate_info = vk::CommandBufferAllocateInfo::builder()
-				.command_buffer_count(2)
-				.command_pool(pool)
-				.level(vk::CommandBufferLevel::PRIMARY);
-
-			let command_buffers = device
-				.allocate_command_buffers(&command_buffer_allocate_info)
-				.unwrap();
-			let setup_command_buffer = command_buffers[0];
-			let draw_command_buffer = command_buffers[1];
+			let draw_command_buffer = command_buffers.pop().unwrap();
+			let setup_command_buffer = command_buffers.pop().unwrap();
 
 			let present_image_views: Vec<vk::ImageView> = present_images
 				.iter()
@@ -418,8 +417,8 @@ impl ExampleBase {
 
 			record_submit_commandbuffer(
 				device.deref().deref(),
-				setup_command_buffer,
-				*present_queue.deref().deref(),
+				&setup_command_buffer,
+				&present_queue,
 				&[],
 				&[],
 				&[],
@@ -441,7 +440,7 @@ impl ExampleBase {
 						);
 
 					device.cmd_pipeline_barrier(
-						setup_command_buffer,
+						*setup_command_buffer.deref().deref(),
 						vk::PipelineStageFlags::BOTTOM_OF_PIPE,
 						vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
 						vk::DependencyFlags::empty(),
@@ -486,7 +485,7 @@ impl ExampleBase {
 				surface_size: present_images[0].size(),
 				present_images,
 				present_image_views,
-				pool,
+				command_pool,
 				draw_command_buffer,
 				setup_command_buffer,
 				depth_image,
@@ -517,8 +516,6 @@ impl Drop for ExampleBase {
 			for &image_view in self.present_image_views.iter() {
 				self.device.destroy_image_view(image_view, None);
 			}
-
-			self.device.destroy_command_pool(self.pool, None);
 		}
 	}
 }
