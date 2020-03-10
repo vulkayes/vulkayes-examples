@@ -5,10 +5,12 @@ use vulkayes_core::ash;
 
 use examples::*;
 
-#[derive(Clone, Debug, Copy)]
-struct Vertex {
-	pos: [f32; 4],
-	color: [f32; 4]
+vulkayes_core::offsetable_struct! {
+	#[derive(Copy, Clone, Debug)]
+	struct Vertex {
+		pos: [f32; 4],
+		color: [f32; 4]
+	} repr(C) as VertexOffsets
 }
 
 fn main() {
@@ -252,13 +254,13 @@ fn main() {
 				location: 0,
 				binding: 0,
 				format: vk::Format::R32G32B32A32_SFLOAT,
-				offset: offset_of!(Vertex, pos) as u32
+				offset: Vertex::offsets().pos as u32
 			},
 			vk::VertexInputAttributeDescription {
 				location: 1,
 				binding: 0,
 				format: vk::Format::R32G32B32A32_SFLOAT,
-				offset: offset_of!(Vertex, color) as u32
+				offset: Vertex::offsets().color as u32
 			}
 		];
 
@@ -392,7 +394,7 @@ fn main() {
 				.clear_values(&clear_values);
 
 			record_submit_commandbuffer(
-				base.device.deref().deref(),
+				&base.device,
 				&base.draw_command_buffer,
 				&base.present_queue,
 				&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
@@ -446,9 +448,8 @@ fn main() {
 				.image_indices(&image_indices);
 
 			base.swapchain
-				.loader()
-				.queue_present(*base.present_queue.deref().deref(), &present_info)
-				.unwrap();
+				.present(&base.present_queue, present_info)
+				.expect("Could not present");
 		});
 
 		base.device.device_wait_idle().unwrap();

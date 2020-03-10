@@ -8,43 +8,32 @@ use std::{
 use ash::{version::DeviceV1_0, vk};
 use vulkayes_core::{
 	ash,
-	command::{pool::CommandPool, buffer::CommandBuffer},
+	command::{buffer::CommandBuffer, pool::CommandPool},
 	device::Device,
 	entry::Entry,
 	instance::{ApplicationInfo, Instance},
 	physical_device::enumerate::PhysicalDeviceMemoryProperties,
-	queue::{Queue, sharing_mode::SharingMode},
+	queue::Queue,
 	resource::ImageSize,
 	swapchain::{Swapchain, SwapchainCreateImageInfo, SwapchainImage},
-	util::{fmt::VkVersion},
+	util::fmt::VkVersion,
 	Vrc
 };
 use vulkayes_window::winit::winit;
 use winit::event_loop::EventLoop;
 
-// Simple offset_of macro akin to C++ offsetof
-#[macro_export]
-macro_rules! offset_of {
-	($base:path, $field:ident) => {{
-		#[allow(unused_unsafe)]
-		unsafe {
-			let b: $base = mem::zeroed();
-			(&b.$field as *const _ as isize) - (&b as *const _ as isize)
-			}
-		}};
-}
-
-pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, &Vrc<CommandBuffer>)>(
-	device: &D,
+pub fn record_submit_commandbuffer(
+	device: &Vrc<Device>,
 	command_buffer: &Vrc<CommandBuffer>,
 	submit_queue: &Vrc<Queue>,
 	wait_mask: &[vk::PipelineStageFlags],
 	wait_semaphores: &[vk::Semaphore],
 	signal_semaphores: &[vk::Semaphore],
-	f: F
+	f: impl FnOnce(&Vrc<Device>, &Vrc<CommandBuffer>)
 ) {
 	unsafe {
-		// TODO: Are we sure this is okay? How is the buffer synchronized?
+		// TODO: This only works because we wait for the fence at the end of each submit.
+		// In real-life applications this isn't viable
 		device
 			.reset_command_buffer(
 				*command_buffer.deref().deref(),
@@ -75,8 +64,8 @@ pub fn record_submit_commandbuffer<D: DeviceV1_0, F: FnOnce(&D, &Vrc<CommandBuff
 			.command_buffers(&command_buffers)
 			.signal_semaphores(signal_semaphores);
 
-		device
-			.queue_submit(*submit_queue.deref().deref(), &[submit_info.build()], submit_fence)
+		submit_queue
+			.submit([submit_info.build()], submit_fence)
 			.expect("queue submit failed.");
 		device
 			.wait_for_fences(&[submit_fence], true, std::u64::MAX)
@@ -136,8 +125,8 @@ pub struct ExampleBase {
 	pub present_images: Vec<Vrc<SwapchainImage>>, //
 	pub present_image_views: Vec<vk::ImageView>,
 
-	pub command_pool: Vrc<CommandPool>, //
-	pub draw_command_buffer: Vrc<CommandBuffer>, //
+	pub command_pool: Vrc<CommandPool>,           //
+	pub draw_command_buffer: Vrc<CommandBuffer>,  //
 	pub setup_command_buffer: Vrc<CommandBuffer>, //
 
 	pub depth_image: vk::Image,
@@ -346,18 +335,20 @@ impl ExampleBase {
 			present_queue.clone(),
 			vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
 			Default::default()
-		).expect("Could not create command pool");
+		)
+		.expect("Could not create command pool");
 
 		let mut command_buffers = CommandBuffer::new(
 			command_pool.clone(),
 			vk::CommandBufferLevel::PRIMARY,
 			std::num::NonZeroU32::new(2).unwrap()
-		).expect("Could not allocate command buffers");
+		)
+		.expect("Could not allocate command buffers");
+
+		let draw_command_buffer = command_buffers.pop().unwrap();
+		let setup_command_buffer = command_buffers.pop().unwrap();
 
 		unsafe {
-			let draw_command_buffer = command_buffers.pop().unwrap();
-			let setup_command_buffer = command_buffers.pop().unwrap();
-
 			let present_image_views: Vec<vk::ImageView> = present_images
 				.iter()
 				.map(|image| {
@@ -416,7 +407,7 @@ impl ExampleBase {
 				.expect("Unable to bind depth image memory");
 
 			record_submit_commandbuffer(
-				device.deref().deref(),
+				&device,
 				&setup_command_buffer,
 				&present_queue,
 				&[],
