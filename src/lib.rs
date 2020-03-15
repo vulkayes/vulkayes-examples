@@ -21,6 +21,109 @@ use vulkayes_core::{
 };
 use vulkayes_window::winit::winit;
 use winit::event_loop::EventLoop;
+use vulkayes_core::sync::semaphore::Semaphore;
+
+pub fn record_command_buffer(
+	command_buffer: &Vrc<CommandBuffer>,
+	f: impl FnOnce(&Vrc<CommandBuffer>)
+) {
+	unsafe {
+		{
+			let cb_lock = command_buffer.lock().expect("vutex poisoned");
+			// TODO: This only works because we wait for the fence at the end of each submit.
+			// In real-life applications this isn't viable
+			command_buffer.device()
+				.reset_command_buffer(
+					*cb_lock,
+					vk::CommandBufferResetFlags::RELEASE_RESOURCES
+				)
+				.expect("Reset command buffer failed.");
+
+			let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
+				.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+
+			command_buffer.device()
+				.begin_command_buffer(*cb_lock, &command_buffer_begin_info)
+				.expect("Begin commandbuffer");
+		}
+
+		f(command_buffer);
+
+		{
+			let cb_lock = command_buffer.lock().expect("vutex poisoned");
+			command_buffer.device()
+				.end_command_buffer(*cb_lock)
+				.expect("End commandbuffer");
+		}
+	}
+}
+pub fn submit_command_buffer_simple(
+	command_buffer: &Vrc<CommandBuffer>,
+	submit_queue: &Vrc<Queue>
+) {
+	vulkayes_core::const_queue_submit! {
+		pub fn submit(
+			&queue,
+			waits: [_; 0],
+			stages,
+			buffers: [_; 1],
+			signals: [_; 0],
+			fence
+		) -> Result<(), QueueSubmitError>;
+	};
+
+	let submit_fence = vulkayes_core::sync::fence::Fence::new(
+		command_buffer.device().clone(),
+		false,
+		Default::default()
+	).expect("Create fence failed.");
+
+	submit(
+		submit_queue,
+		[],
+		[],
+		[command_buffer.deref()],
+		[],
+		Some(submit_fence.deref())
+	).expect("queue submit failed");
+
+	submit_fence.wait(Default::default()).expect("fence wait failed");
+}
+pub fn submit_command_buffer(
+	command_buffer: &Vrc<CommandBuffer>,
+	submit_queue: &Vrc<Queue>,
+	wait_semaphore: &Vrc<Semaphore>,
+	wait_mask: vk::PipelineStageFlags,
+	signal_semaphore: &Vrc<Semaphore>,
+) {
+	vulkayes_core::const_queue_submit! {
+		pub fn submit(
+			&queue,
+			waits: [_; 1],
+			stages,
+			buffers: [_; 1],
+			signals: [_; 1],
+			fence
+		) -> Result<(), QueueSubmitError>;
+	};
+
+	let submit_fence = vulkayes_core::sync::fence::Fence::new(
+		command_buffer.device().clone(),
+		false,
+		Default::default()
+	).expect("Create fence failed.");
+
+	submit(
+		submit_queue,
+		[wait_semaphore],
+		[wait_mask],
+		[command_buffer],
+		[signal_semaphore],
+		Some(&submit_fence)
+	).expect("queue submit failed");
+
+	submit_fence.wait(Default::default()).expect("fence wait failed");
+}
 
 pub fn record_submit_commandbuffer(
 	device: &Vrc<Device>,
@@ -29,14 +132,16 @@ pub fn record_submit_commandbuffer(
 	wait_mask: &[vk::PipelineStageFlags],
 	wait_semaphores: &[vk::Semaphore],
 	signal_semaphores: &[vk::Semaphore],
-	f: impl FnOnce(&Vrc<Device>, &Vrc<CommandBuffer>)
+	f: impl FnOnce(&Vrc<Device>, &vulkayes_core::util::sync::VutexGuard<vk::CommandBuffer>)
 ) {
+	let cb_lock = command_buffer.lock().expect("vutex poisoned");
+
 	unsafe {
 		// TODO: This only works because we wait for the fence at the end of each submit.
 		// In real-life applications this isn't viable
 		device
 			.reset_command_buffer(
-				*command_buffer.deref().deref(),
+				*cb_lock,
 				vk::CommandBufferResetFlags::RELEASE_RESOURCES
 			)
 			.expect("Reset command buffer failed.");
@@ -45,32 +150,33 @@ pub fn record_submit_commandbuffer(
 			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
 		device
-			.begin_command_buffer(*command_buffer.deref().deref(), &command_buffer_begin_info)
+			.begin_command_buffer(*cb_lock, &command_buffer_begin_info)
 			.expect("Begin commandbuffer");
-		f(device, &command_buffer);
+		f(device, &cb_lock);
 		device
-			.end_command_buffer(*command_buffer.deref().deref())
+			.end_command_buffer(*cb_lock)
 			.expect("End commandbuffer");
 
-		let submit_fence = device
-			.create_fence(&vk::FenceCreateInfo::default(), None)
-			.expect("Create fence failed.");
+		let submit_fence = vulkayes_core::sync::fence::Fence::new(
+			device.clone(),
+			false,
+			Default::default()
+		).expect("Could not create fence");
 
-		let command_buffers = [*command_buffer.deref().deref()];
-
+		let cbs = [*cb_lock];
 		let submit_info = vk::SubmitInfo::builder()
 			.wait_semaphores(wait_semaphores)
 			.wait_dst_stage_mask(wait_mask)
-			.command_buffers(&command_buffers)
+			.command_buffers(&cbs)
 			.signal_semaphores(signal_semaphores);
 
 		submit_queue
-			.submit([submit_info.build()], submit_fence)
-			.expect("queue submit failed.");
-		device
-			.wait_for_fences(&[submit_fence], true, std::u64::MAX)
-			.expect("Wait for fence failed.");
-		device.destroy_fence(submit_fence, None);
+			.submit([submit_info.build()], Some(submit_fence.deref()))
+			.expect("queue submit failed");
+
+		submit_fence.wait(
+			Default::default()
+		).expect("fence wait failed");
 	}
 }
 
@@ -332,7 +438,7 @@ impl ExampleBase {
 		};
 
 		let command_pool = CommandPool::new(
-			present_queue.clone(),
+			&present_queue,
 			vk::CommandPoolCreateFlags::RESET_COMMAND_BUFFER,
 			Default::default()
 		)
@@ -406,14 +512,11 @@ impl ExampleBase {
 				.bind_image_memory(depth_image, depth_image_memory, 0)
 				.expect("Unable to bind depth image memory");
 
-			record_submit_commandbuffer(
-				&device,
+			record_command_buffer(
 				&setup_command_buffer,
-				&present_queue,
-				&[],
-				&[],
-				&[],
-				|device, setup_command_buffer| {
+				|command_buffer| {
+					let cb_lock = command_buffer.lock().expect("vutex poisoned");
+
 					let layout_transition_barriers = vk::ImageMemoryBarrier::builder()
 						.image(depth_image)
 						.dst_access_mask(
@@ -430,8 +533,8 @@ impl ExampleBase {
 								.build()
 						);
 
-					device.cmd_pipeline_barrier(
-						*setup_command_buffer.deref().deref(),
+					command_buffer.device().cmd_pipeline_barrier(
+						*cb_lock,
 						vk::PipelineStageFlags::BOTTOM_OF_PIPE,
 						vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
 						vk::DependencyFlags::empty(),
@@ -441,6 +544,47 @@ impl ExampleBase {
 					);
 				}
 			);
+
+			submit_command_buffer_simple(
+				&setup_command_buffer,
+				&present_queue
+			);
+
+			// record_submit_commandbuffer(
+			// 	&device,
+			// 	&setup_command_buffer,
+			// 	&present_queue,
+			// 	&[],
+			// 	&[],
+			// 	&[],
+			// 	|device, cb_lock| {
+			// 		let layout_transition_barriers = vk::ImageMemoryBarrier::builder()
+			// 			.image(depth_image)
+			// 			.dst_access_mask(
+			// 				vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+			// 					| vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+			// 			)
+			// 			.new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+			// 			.old_layout(vk::ImageLayout::UNDEFINED)
+			// 			.subresource_range(
+			// 				vk::ImageSubresourceRange::builder()
+			// 					.aspect_mask(vk::ImageAspectFlags::DEPTH)
+			// 					.layer_count(1)
+			// 					.level_count(1)
+			// 					.build()
+			// 			);
+			//
+			// 		device.cmd_pipeline_barrier(
+			// 			**cb_lock,
+			// 			vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+			// 			vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+			// 			vk::DependencyFlags::empty(),
+			// 			&[],
+			// 			&[],
+			// 			&[layout_transition_barriers.build()]
+			// 		);
+			// 	}
+			// );
 
 			let depth_image_view_info = vk::ImageViewCreateInfo::builder()
 				.subresource_range(

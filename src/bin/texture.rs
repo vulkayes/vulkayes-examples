@@ -705,11 +705,12 @@ fn main() {
 		let graphic_pipeline = graphics_pipelines[0];
 
 		base.render_loop(|| {
+			let swapchain_lock = base.swapchain.lock().expect("vutex poisoned");
 			let (present_index, _) = base
 				.swapchain
 				.loader()
 				.acquire_next_image(
-					*base.swapchain.deref().deref(),
+					*swapchain_lock,
 					std::u64::MAX,
 					base.present_complete_semaphore,
 					vk::Fence::null()
@@ -745,14 +746,14 @@ fn main() {
 				&[vk::PipelineStageFlags::BOTTOM_OF_PIPE],
 				&[base.present_complete_semaphore],
 				&[base.rendering_complete_semaphore],
-				|device, draw_command_buffer| {
+				|device, cb_lock| {
 					device.cmd_begin_render_pass(
-						*draw_command_buffer.deref().deref(),
+						**cb_lock,
 						&render_pass_begin_info,
 						vk::SubpassContents::INLINE
 					);
 					device.cmd_bind_descriptor_sets(
-						*draw_command_buffer.deref().deref(),
+						**cb_lock,
 						vk::PipelineBindPoint::GRAPHICS,
 						pipeline_layout,
 						0,
@@ -760,26 +761,26 @@ fn main() {
 						&[]
 					);
 					device.cmd_bind_pipeline(
-						*draw_command_buffer.deref().deref(),
+						**cb_lock,
 						vk::PipelineBindPoint::GRAPHICS,
 						graphic_pipeline
 					);
-					device.cmd_set_viewport(*draw_command_buffer.deref().deref(), 0, &viewports);
-					device.cmd_set_scissor(*draw_command_buffer.deref().deref(), 0, &scissors);
+					device.cmd_set_viewport(**cb_lock, 0, &viewports);
+					device.cmd_set_scissor(**cb_lock, 0, &scissors);
 					device.cmd_bind_vertex_buffers(
-						*draw_command_buffer.deref().deref(),
+						**cb_lock,
 						0,
 						&[vertex_input_buffer],
 						&[0]
 					);
 					device.cmd_bind_index_buffer(
-						*draw_command_buffer.deref().deref(),
+						**cb_lock,
 						index_buffer,
 						0,
 						vk::IndexType::UINT32
 					);
 					device.cmd_draw_indexed(
-						*draw_command_buffer.deref().deref(),
+						**cb_lock,
 						index_buffer_data.len() as u32,
 						1,
 						0,
@@ -788,15 +789,15 @@ fn main() {
 					);
 					// Or draw without the index buffer
 					// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
-					device.cmd_end_render_pass(*draw_command_buffer.deref().deref());
+					device.cmd_end_render_pass(**cb_lock);
 				}
 			);
-			// let mut present_info_err = mem::zeroed();
+
 			let present_info = vk::PresentInfoKHR {
 				wait_semaphore_count: 1,
 				p_wait_semaphores: &base.rendering_complete_semaphore,
 				swapchain_count: 1,
-				p_swapchains: base.swapchain.deref().deref(),
+				p_swapchains: swapchain_lock.deref(),
 				p_image_indices: &present_index,
 				..Default::default()
 			};

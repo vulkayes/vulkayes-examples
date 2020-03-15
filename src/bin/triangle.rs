@@ -360,11 +360,12 @@ fn main() {
 		let graphic_pipeline = graphics_pipelines[0];
 
 		base.render_loop(|| {
+			let swapchain_lock = base.swapchain.lock().expect("vutex poisoned");
 			let (present_index, _) = base
 				.swapchain
 				.loader()
 				.acquire_next_image(
-					*base.swapchain.deref().deref(),
+					*swapchain_lock,
 					std::u64::MAX,
 					base.present_complete_semaphore,
 					vk::Fence::null()
@@ -440,7 +441,7 @@ fn main() {
 			);
 			// let mut present_info_err = mem::zeroed();
 			let wait_semaphors = [base.rendering_complete_semaphore];
-			let swapchains = [*base.swapchain.deref().deref()];
+			let swapchains = [*swapchain_lock];
 			let image_indices = [present_index];
 			let present_info = vk::PresentInfoKHR::builder()
 				.wait_semaphores(&wait_semaphors) // &base.rendering_complete_semaphore)
