@@ -15,7 +15,7 @@ vulkayes_core::offsetable_struct! {
 
 fn main() {
 	unsafe {
-		let base = ExampleBase::new(1920, 1080);
+		let mut base = ExampleBase::new(1920, 1080);
 		let renderpass_attachments = [
 			vk::AttachmentDescription {
 				format: base.present_images[0].format(),
@@ -359,18 +359,7 @@ fn main() {
 
 		let graphic_pipeline = graphics_pipelines[0];
 
-		base.render_loop(|| {
-			let swapchain_lock = base.swapchain.lock().expect("vutex poisoned");
-			let (present_index, _) = base
-				.swapchain
-				.loader()
-				.acquire_next_image(
-					*swapchain_lock,
-					std::u64::MAX,
-					base.present_complete_semaphore,
-					vk::Fence::null()
-				)
-				.unwrap();
+		base.render_loop(|base, present_index| {
 			let clear_values = [
 				vk::ClearValue {
 					color: vk::ClearColorValue {
@@ -394,63 +383,36 @@ fn main() {
 				})
 				.clear_values(&clear_values);
 
-			record_submit_commandbuffer(
-				&base.device,
+			record_command_buffer(&base.draw_command_buffer, |command_buffer| {
+				let device = command_buffer.pool().device();
+				let cb_lock = command_buffer.lock().expect("vutex poisoned");
+
+				device.cmd_begin_render_pass(
+					*cb_lock,
+					&render_pass_begin_info,
+					vk::SubpassContents::INLINE
+				);
+				device.cmd_bind_pipeline(
+					*cb_lock,
+					vk::PipelineBindPoint::GRAPHICS,
+					graphic_pipeline
+				);
+				device.cmd_set_viewport(*cb_lock, 0, &viewports);
+				device.cmd_set_scissor(*cb_lock, 0, &scissors);
+				device.cmd_bind_vertex_buffers(*cb_lock, 0, &[vertex_input_buffer], &[0]);
+				device.cmd_bind_index_buffer(*cb_lock, index_buffer, 0, vk::IndexType::UINT32);
+				device.cmd_draw_indexed(*cb_lock, index_buffer_data.len() as u32, 1, 0, 0, 1);
+				// Or draw without the index buffer
+				// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
+				device.cmd_end_render_pass(*cb_lock);
+			});
+			submit_command_buffer(
 				&base.draw_command_buffer,
 				&base.present_queue,
-				&[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
-				&[base.present_complete_semaphore],
-				&[base.rendering_complete_semaphore],
-				|device, draw_command_buffer| {
-					device.cmd_begin_render_pass(
-						*draw_command_buffer.deref().deref(),
-						&render_pass_begin_info,
-						vk::SubpassContents::INLINE
-					);
-					device.cmd_bind_pipeline(
-						*draw_command_buffer.deref().deref(),
-						vk::PipelineBindPoint::GRAPHICS,
-						graphic_pipeline
-					);
-					device.cmd_set_viewport(*draw_command_buffer.deref().deref(), 0, &viewports);
-					device.cmd_set_scissor(*draw_command_buffer.deref().deref(), 0, &scissors);
-					device.cmd_bind_vertex_buffers(
-						*draw_command_buffer.deref().deref(),
-						0,
-						&[vertex_input_buffer],
-						&[0]
-					);
-					device.cmd_bind_index_buffer(
-						*draw_command_buffer.deref().deref(),
-						index_buffer,
-						0,
-						vk::IndexType::UINT32
-					);
-					device.cmd_draw_indexed(
-						*draw_command_buffer.deref().deref(),
-						index_buffer_data.len() as u32,
-						1,
-						0,
-						0,
-						1
-					);
-					// Or draw without the index buffer
-					// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
-					device.cmd_end_render_pass(*draw_command_buffer.deref().deref());
-				}
+				&base.present_complete_semaphore,
+				vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
+				&base.rendering_complete_semaphore
 			);
-			// let mut present_info_err = mem::zeroed();
-			let wait_semaphors = [base.rendering_complete_semaphore];
-			let swapchains = [*swapchain_lock];
-			let image_indices = [present_index];
-			let present_info = vk::PresentInfoKHR::builder()
-				.wait_semaphores(&wait_semaphors) // &base.rendering_complete_semaphore)
-				.swapchains(&swapchains)
-				.image_indices(&image_indices);
-
-			base.swapchain
-				.present(&base.present_queue, present_info)
-				.expect("Could not present");
 		});
 
 		base.device.device_wait_idle().unwrap();

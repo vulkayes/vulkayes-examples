@@ -1,5 +1,4 @@
 use std::{
-	cell::RefCell,
 	default::Default,
 	num::NonZeroU32,
 	ops::{Deref, Drop}
@@ -15,13 +14,17 @@ use vulkayes_core::{
 	physical_device::enumerate::PhysicalDeviceMemoryProperties,
 	queue::Queue,
 	resource::ImageSize,
-	swapchain::{Swapchain, SwapchainCreateImageInfo, SwapchainImage},
+	swapchain::{
+		image::{SwapchainCreateImageInfo, SwapchainImage},
+		Swapchain,
+		SwapchainCreateInfo
+	},
+	sync::semaphore::{BinarySemaphore, Semaphore},
 	util::fmt::VkVersion,
 	Vrc
 };
 use vulkayes_window::winit::winit;
 use winit::event_loop::EventLoop;
-use vulkayes_core::sync::semaphore::Semaphore;
 
 pub fn record_command_buffer(
 	command_buffer: &Vrc<CommandBuffer>,
@@ -32,17 +35,18 @@ pub fn record_command_buffer(
 			let cb_lock = command_buffer.lock().expect("vutex poisoned");
 			// TODO: This only works because we wait for the fence at the end of each submit.
 			// In real-life applications this isn't viable
-			command_buffer.device()
-				.reset_command_buffer(
-					*cb_lock,
-					vk::CommandBufferResetFlags::RELEASE_RESOURCES
-				)
+			command_buffer
+				.pool()
+				.device()
+				.reset_command_buffer(*cb_lock, vk::CommandBufferResetFlags::RELEASE_RESOURCES)
 				.expect("Reset command buffer failed.");
 
 			let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
 				.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 
-			command_buffer.device()
+			command_buffer
+				.pool()
+				.device()
 				.begin_command_buffer(*cb_lock, &command_buffer_begin_info)
 				.expect("Begin commandbuffer");
 		}
@@ -51,7 +55,9 @@ pub fn record_command_buffer(
 
 		{
 			let cb_lock = command_buffer.lock().expect("vutex poisoned");
-			command_buffer.device()
+			command_buffer
+				.pool()
+				.device()
 				.end_command_buffer(*cb_lock)
 				.expect("End commandbuffer");
 		}
@@ -64,19 +70,20 @@ pub fn submit_command_buffer_simple(
 	vulkayes_core::const_queue_submit! {
 		pub fn submit(
 			&queue,
-			waits: [_; 0],
-			stages,
-			buffers: [_; 1],
-			signals: [_; 0],
-			fence
+			waits: [&Semaphore; 0],
+			stages: [vk::PipelineStageFlags; _],
+			buffers: [&CommandBuffer; 1],
+			signals: [&Semaphore; 0],
+			fence: Option<&Fence>
 		) -> Result<(), QueueSubmitError>;
 	};
 
 	let submit_fence = vulkayes_core::sync::fence::Fence::new(
-		command_buffer.device().clone(),
+		command_buffer.pool().device().clone(),
 		false,
 		Default::default()
-	).expect("Create fence failed.");
+	)
+	.expect("Create fence failed.");
 
 	submit(
 		submit_queue,
@@ -85,33 +92,37 @@ pub fn submit_command_buffer_simple(
 		[command_buffer.deref()],
 		[],
 		Some(submit_fence.deref())
-	).expect("queue submit failed");
+	)
+	.expect("queue submit failed");
 
-	submit_fence.wait(Default::default()).expect("fence wait failed");
+	submit_fence
+		.wait(Default::default())
+		.expect("fence wait failed");
 }
 pub fn submit_command_buffer(
 	command_buffer: &Vrc<CommandBuffer>,
 	submit_queue: &Vrc<Queue>,
 	wait_semaphore: &Vrc<Semaphore>,
 	wait_mask: vk::PipelineStageFlags,
-	signal_semaphore: &Vrc<Semaphore>,
+	signal_semaphore: &Vrc<Semaphore>
 ) {
 	vulkayes_core::const_queue_submit! {
 		pub fn submit(
 			&queue,
-			waits: [_; 1],
-			stages,
-			buffers: [_; 1],
-			signals: [_; 1],
-			fence
+			waits: [&Semaphore; 1],
+			stages: [vk::PipelineStageFlags; _],
+			buffers: [&CommandBuffer; 1],
+			signals: [&Semaphore; 1],
+			fence: Option<&Fence>
 		) -> Result<(), QueueSubmitError>;
 	};
 
 	let submit_fence = vulkayes_core::sync::fence::Fence::new(
-		command_buffer.device().clone(),
+		command_buffer.pool().device().clone(),
 		false,
 		Default::default()
-	).expect("Create fence failed.");
+	)
+	.expect("Create fence failed.");
 
 	submit(
 		submit_queue,
@@ -120,64 +131,12 @@ pub fn submit_command_buffer(
 		[command_buffer],
 		[signal_semaphore],
 		Some(&submit_fence)
-	).expect("queue submit failed");
+	)
+	.expect("queue submit failed");
 
-	submit_fence.wait(Default::default()).expect("fence wait failed");
-}
-
-pub fn record_submit_commandbuffer(
-	device: &Vrc<Device>,
-	command_buffer: &Vrc<CommandBuffer>,
-	submit_queue: &Vrc<Queue>,
-	wait_mask: &[vk::PipelineStageFlags],
-	wait_semaphores: &[vk::Semaphore],
-	signal_semaphores: &[vk::Semaphore],
-	f: impl FnOnce(&Vrc<Device>, &vulkayes_core::util::sync::VutexGuard<vk::CommandBuffer>)
-) {
-	let cb_lock = command_buffer.lock().expect("vutex poisoned");
-
-	unsafe {
-		// TODO: This only works because we wait for the fence at the end of each submit.
-		// In real-life applications this isn't viable
-		device
-			.reset_command_buffer(
-				*cb_lock,
-				vk::CommandBufferResetFlags::RELEASE_RESOURCES
-			)
-			.expect("Reset command buffer failed.");
-
-		let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
-			.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
-
-		device
-			.begin_command_buffer(*cb_lock, &command_buffer_begin_info)
-			.expect("Begin commandbuffer");
-		f(device, &cb_lock);
-		device
-			.end_command_buffer(*cb_lock)
-			.expect("End commandbuffer");
-
-		let submit_fence = vulkayes_core::sync::fence::Fence::new(
-			device.clone(),
-			false,
-			Default::default()
-		).expect("Could not create fence");
-
-		let cbs = [*cb_lock];
-		let submit_info = vk::SubmitInfo::builder()
-			.wait_semaphores(wait_semaphores)
-			.wait_dst_stage_mask(wait_mask)
-			.command_buffers(&cbs)
-			.signal_semaphores(signal_semaphores);
-
-		submit_queue
-			.submit([submit_info.build()], Some(submit_fence.deref()))
-			.expect("queue submit failed");
-
-		submit_fence.wait(
-			Default::default()
-		).expect("fence wait failed");
-	}
+	submit_fence
+		.wait(Default::default())
+		.expect("fence wait failed");
 }
 
 pub fn find_memorytype_index(
@@ -219,7 +178,7 @@ pub struct ExampleBase {
 	pub instance: Vrc<Instance>, //
 	pub device: Vrc<Device>,     //
 
-	pub event_loop: RefCell<EventLoop<()>>, //
+	event_loop: Option<EventLoop<()>>, //
 
 	pub device_memory_properties: PhysicalDeviceMemoryProperties, //
 	pub present_queue: Vrc<Queue>,                                //
@@ -227,8 +186,9 @@ pub struct ExampleBase {
 	pub window: winit::window::Window, //
 	pub surface_size: ImageSize,
 
-	pub swapchain: Vrc<Swapchain>,                //
-	pub present_images: Vec<Vrc<SwapchainImage>>, //
+	pub swapchain: Vrc<Swapchain>,                            //
+	pub swapchain_create_info: SwapchainCreateInfo<[u32; 1]>, //
+	pub present_images: Vec<Vrc<SwapchainImage>>,             //
 	pub present_image_views: Vec<vk::ImageView>,
 
 	pub command_pool: Vrc<CommandPool>,           //
@@ -239,34 +199,87 @@ pub struct ExampleBase {
 	pub depth_image_view: vk::ImageView,
 	pub depth_image_memory: vk::DeviceMemory,
 
-	pub present_complete_semaphore: vk::Semaphore,
-	pub rendering_complete_semaphore: vk::Semaphore
+	pub present_complete_semaphore: BinarySemaphore,   //
+	pub rendering_complete_semaphore: BinarySemaphore, //
+
+	pub swapchain_outdated: bool
 }
 
 impl ExampleBase {
-	pub fn render_loop<F: Fn()>(&self, f: F) {
+	fn draw(&mut self, f: &impl Fn(&mut Self, u32)) {
+		vulkayes_core::const_queue_present!(
+			pub fn queue_present(
+				&queue,
+				waits: [&Semaphore; 1],
+				images: [&SwapchainImage; 1],
+				result_for_all: bool
+			) -> QueuePresentMultipleResult<[QueuePresentResult; _]>;
+		);
+
+
+		if self.swapchain_outdated {
+			let _window_size = self.window.inner_size();
+			// TODO: Recreate swapchain and framebuffers
+			self.swapchain_outdated = false;
+		}
+
+		let present_index = match self.swapchain.acquire_next(
+			Default::default(),
+			(&self.present_complete_semaphore).into()
+		) {
+			Ok(vulkayes_core::swapchain::error::AcquireResultValue::SUCCESS(i)) => i,
+			Ok(vulkayes_core::swapchain::error::AcquireResultValue::SUBOPTIMAL_KHR(_))
+			| Err(vulkayes_core::swapchain::error::AcquireError::ERROR_OUT_OF_DATE_KHR) => {
+				self.swapchain_outdated = true;
+				return
+			}
+			Err(e) => panic!("{}", e)
+		};
+
+		f(self, present_index);
+
+		match queue_present(
+			&self.present_queue,
+			[&self.rendering_complete_semaphore],
+			[&self.present_images[present_index as usize]],
+			false
+		) {
+			vulkayes_core::queue::error::QueuePresentMultipleResult::Single(result) => match result
+			{
+				Ok(vulkayes_core::queue::error::QueuePresentResultValue::SUCCESS) => (),
+				Ok(vulkayes_core::queue::error::QueuePresentResultValue::SUBOPTIMAL_KHR)
+				| Err(vulkayes_core::queue::error::QueuePresentError::ERROR_OUT_OF_DATE_KHR) => {
+					self.swapchain_outdated = true;
+				}
+				Err(e) => panic!("{}", e)
+			},
+			_ => unreachable!()
+		}
+	}
+
+	pub fn render_loop(&mut self, f: impl Fn(&mut Self, u32)) {
 		use winit::{
 			event::{Event, WindowEvent},
 			platform::desktop::EventLoopExtDesktop
 		};
 
-		self.event_loop
-			.borrow_mut()
-			.run_return(|event, _target, control_flow| {
-				// Run update
-				f();
+		let mut event_loop = self.event_loop.take().unwrap();
+		event_loop.run_return(|event, _target, control_flow| {
+			self.draw(&f);
 
-				// Handle window close event
-				match event {
-					Event::WindowEvent {
-						event: WindowEvent::CloseRequested,
-						..
-					} => {
-						*control_flow = winit::event_loop::ControlFlow::Exit;
-					}
-					_ => ()
+			// Handle window close event
+			match event {
+				Event::WindowEvent {
+					event: WindowEvent::CloseRequested,
+					..
+				} => {
+					*control_flow = winit::event_loop::ControlFlow::Exit;
 				}
-			});
+				_ => ()
+			}
+		});
+
+		self.event_loop = Some(event_loop);
 	}
 
 	pub fn new(window_width: u32, window_height: u32) -> Self {
@@ -374,67 +387,17 @@ impl ExampleBase {
 			(device_data.device, present_queue)
 		};
 
+		let swapchain_create_info =
+			Self::swapchain_create_info(&surface, &present_queue, window_width, window_height);
 		let (swapchain, present_images) = {
-			let surface_format = surface
-				.physical_device_surface_formats(device.physical_device())
-				.unwrap()
-				.drain(..)
-				.nth(0)
-				.expect("Unable to find suitable surface format.");
-			let surface_capabilities = surface
-				.physical_device_surface_capabilities(device.physical_device())
-				.unwrap();
-
-			let desired_image_count = match surface_capabilities.max_image_count {
-				0 => surface_capabilities.min_image_count + 1,
-				a => (surface_capabilities.min_image_count + 1).min(a)
-			};
-			let surface_resolution = match surface_capabilities.current_extent.width {
-				std::u32::MAX => [
-					NonZeroU32::new(window_width).unwrap(),
-					NonZeroU32::new(window_height).unwrap()
-				],
-				_ => [
-					NonZeroU32::new(surface_capabilities.current_extent.width).unwrap(),
-					NonZeroU32::new(surface_capabilities.current_extent.height).unwrap()
-				]
-			};
-			let pre_transform = if surface_capabilities
-				.supported_transforms
-				.contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
-			{
-				vk::SurfaceTransformFlagsKHR::IDENTITY
-			} else {
-				surface_capabilities.current_transform
-			};
-			let present_mode = surface
-				.physical_device_surface_present_modes(device.physical_device())
-				.unwrap()
-				.into_iter()
-				.find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
-				.unwrap_or(vk::PresentModeKHR::FIFO);
-
-			let swapchain_data = Swapchain::new(
+			let s = Swapchain::new(
 				device.clone(),
 				surface,
-				SwapchainCreateImageInfo {
-					min_image_count: NonZeroU32::new(desired_image_count).unwrap(),
-					image_format: surface_format.format,
-					image_color_space: surface_format.color_space,
-					image_extent: surface_resolution,
-					image_array_layers: vulkayes_core::NONZEROU32_ONE,
-					image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
-				},
-				present_queue.deref().into(),
-				pre_transform,
-				vk::CompositeAlphaFlagsKHR::OPAQUE,
-				present_mode,
-				true,
+				swapchain_create_info,
 				Default::default()
 			)
-			.expect("Could not create swapchain");
-
-			(swapchain_data.swapchain, swapchain_data.images)
+			.expect("could not create swapchain");
+			(s.swapchain, s.images)
 		};
 
 		let command_pool = CommandPool::new(
@@ -512,79 +475,37 @@ impl ExampleBase {
 				.bind_image_memory(depth_image, depth_image_memory, 0)
 				.expect("Unable to bind depth image memory");
 
-			record_command_buffer(
-				&setup_command_buffer,
-				|command_buffer| {
-					let cb_lock = command_buffer.lock().expect("vutex poisoned");
+			record_command_buffer(&setup_command_buffer, |command_buffer| {
+				let cb_lock = command_buffer.lock().expect("vutex poisoned");
 
-					let layout_transition_barriers = vk::ImageMemoryBarrier::builder()
-						.image(depth_image)
-						.dst_access_mask(
-							vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-								| vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
-						)
-						.new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-						.old_layout(vk::ImageLayout::UNDEFINED)
-						.subresource_range(
-							vk::ImageSubresourceRange::builder()
-								.aspect_mask(vk::ImageAspectFlags::DEPTH)
-								.layer_count(1)
-								.level_count(1)
-								.build()
-						);
-
-					command_buffer.device().cmd_pipeline_barrier(
-						*cb_lock,
-						vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-						vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-						vk::DependencyFlags::empty(),
-						&[],
-						&[],
-						&[layout_transition_barriers.build()]
+				let layout_transition_barriers = vk::ImageMemoryBarrier::builder()
+					.image(depth_image)
+					.dst_access_mask(
+						vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+							| vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+					)
+					.new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+					.old_layout(vk::ImageLayout::UNDEFINED)
+					.subresource_range(
+						vk::ImageSubresourceRange::builder()
+							.aspect_mask(vk::ImageAspectFlags::DEPTH)
+							.layer_count(1)
+							.level_count(1)
+							.build()
 					);
-				}
-			);
 
-			submit_command_buffer_simple(
-				&setup_command_buffer,
-				&present_queue
-			);
+				command_buffer.pool().device().cmd_pipeline_barrier(
+					*cb_lock,
+					vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+					vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
+					vk::DependencyFlags::empty(),
+					&[],
+					&[],
+					&[layout_transition_barriers.build()]
+				);
+			});
 
-			// record_submit_commandbuffer(
-			// 	&device,
-			// 	&setup_command_buffer,
-			// 	&present_queue,
-			// 	&[],
-			// 	&[],
-			// 	&[],
-			// 	|device, cb_lock| {
-			// 		let layout_transition_barriers = vk::ImageMemoryBarrier::builder()
-			// 			.image(depth_image)
-			// 			.dst_access_mask(
-			// 				vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-			// 					| vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
-			// 			)
-			// 			.new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-			// 			.old_layout(vk::ImageLayout::UNDEFINED)
-			// 			.subresource_range(
-			// 				vk::ImageSubresourceRange::builder()
-			// 					.aspect_mask(vk::ImageAspectFlags::DEPTH)
-			// 					.layer_count(1)
-			// 					.level_count(1)
-			// 					.build()
-			// 			);
-			//
-			// 		device.cmd_pipeline_barrier(
-			// 			**cb_lock,
-			// 			vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-			// 			vk::PipelineStageFlags::LATE_FRAGMENT_TESTS,
-			// 			vk::DependencyFlags::empty(),
-			// 			&[],
-			// 			&[],
-			// 			&[layout_transition_barriers.build()]
-			// 		);
-			// 	}
-			// );
+			submit_command_buffer_simple(&setup_command_buffer, &present_queue);
 
 			let depth_image_view_info = vk::ImageViewCreateInfo::builder()
 				.subresource_range(
@@ -602,21 +523,19 @@ impl ExampleBase {
 				.create_image_view(&depth_image_view_info, None)
 				.unwrap();
 
-			let semaphore_create_info = vk::SemaphoreCreateInfo::default();
-
-			let present_complete_semaphore = device
-				.create_semaphore(&semaphore_create_info, None)
-				.unwrap();
-			let rendering_complete_semaphore = device
-				.create_semaphore(&semaphore_create_info, None)
-				.unwrap();
+			let present_complete_semaphore = Semaphore::binary(device.clone(), Default::default())
+				.expect("Could not create semaphore");
+			let rendering_complete_semaphore =
+				Semaphore::binary(device.clone(), Default::default())
+					.expect("Could not create semaphore");
 			ExampleBase {
-				event_loop: RefCell::new(event_loop),
+				event_loop: Some(event_loop),
 				instance,
 				device,
 				device_memory_properties,
 				present_queue,
 				swapchain,
+				swapchain_create_info,
 				surface_size: present_images[0].size(),
 				present_images,
 				present_image_views,
@@ -628,8 +547,71 @@ impl ExampleBase {
 				present_complete_semaphore,
 				rendering_complete_semaphore,
 				window,
-				depth_image_memory
+				depth_image_memory,
+				swapchain_outdated: false
 			}
+		}
+	}
+
+	pub fn swapchain_create_info(
+		surface: &vulkayes_core::surface::Surface,
+		queue: &Queue,
+		window_width: u32,
+		window_height: u32
+	) -> SwapchainCreateInfo<[u32; 1]> {
+		let surface_format = surface
+			.physical_device_surface_formats(queue.device().physical_device())
+			.unwrap()
+			.drain(..)
+			.nth(0)
+			.expect("Unable to find suitable surface format.");
+		let surface_capabilities = surface
+			.physical_device_surface_capabilities(queue.device().physical_device())
+			.unwrap();
+
+		let desired_image_count = match surface_capabilities.max_image_count {
+			0 => surface_capabilities.min_image_count + 1,
+			a => (surface_capabilities.min_image_count + 1).min(a)
+		};
+		let surface_resolution = match surface_capabilities.current_extent.width {
+			std::u32::MAX => [
+				NonZeroU32::new(window_width).unwrap(),
+				NonZeroU32::new(window_height).unwrap()
+			],
+			_ => [
+				NonZeroU32::new(surface_capabilities.current_extent.width).unwrap(),
+				NonZeroU32::new(surface_capabilities.current_extent.height).unwrap()
+			]
+		};
+		let pre_transform = if surface_capabilities
+			.supported_transforms
+			.contains(vk::SurfaceTransformFlagsKHR::IDENTITY)
+		{
+			vk::SurfaceTransformFlagsKHR::IDENTITY
+		} else {
+			surface_capabilities.current_transform
+		};
+		let present_mode = surface
+			.physical_device_surface_present_modes(queue.device().physical_device())
+			.unwrap()
+			.into_iter()
+			.find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
+			.unwrap_or(vk::PresentModeKHR::FIFO);
+
+		SwapchainCreateInfo {
+			image_info: SwapchainCreateImageInfo {
+				min_image_count: NonZeroU32::new(desired_image_count).unwrap(),
+				image_format: surface_format.format,
+				image_color_space: surface_format.color_space,
+				image_extent: surface_resolution,
+				image_array_layers: vulkayes_core::NONZEROU32_ONE,
+				image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
+			},
+			sharing_mode: queue.into(),
+			pre_transform,
+			composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
+			present_mode,
+			clipped: true
 		}
 	}
 }
@@ -638,11 +620,6 @@ impl Drop for ExampleBase {
 	fn drop(&mut self) {
 		unsafe {
 			self.device.device_wait_idle().unwrap();
-
-			self.device
-				.destroy_semaphore(self.present_complete_semaphore, None);
-			self.device
-				.destroy_semaphore(self.rendering_complete_semaphore, None);
 
 			self.device.destroy_image_view(self.depth_image_view, None);
 			self.device.destroy_image(self.depth_image, None);

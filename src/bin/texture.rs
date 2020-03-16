@@ -3,7 +3,6 @@ use std::{
 	ffi::CString,
 	io::Cursor,
 	mem::{self, align_of},
-	ops::Deref,
 	os::raw::c_void
 };
 
@@ -29,7 +28,7 @@ pub struct Vector3 {
 
 fn main() {
 	unsafe {
-		let base = ExampleBase::new(1920, 1080);
+		let mut base = ExampleBase::new(1920, 1080);
 
 		let renderpass_attachments = [
 			vk::AttachmentDescription {
@@ -356,80 +355,76 @@ fn main() {
 			.bind_image_memory(texture_image, texture_memory, 0)
 			.expect("Unable to bind depth image memory");
 
-		record_submit_commandbuffer(
-			&base.device,
-			&base.setup_command_buffer,
-			&base.present_queue,
-			&[],
-			&[],
-			&[],
-			|device, texture_command_buffer| {
-				let texture_barrier = vk::ImageMemoryBarrier {
-					dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-					new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-					image: texture_image,
-					subresource_range: vk::ImageSubresourceRange {
-						aspect_mask: vk::ImageAspectFlags::COLOR,
-						level_count: 1,
-						layer_count: 1,
-						..Default::default()
-					},
-					..Default::default()
-				};
-				device.cmd_pipeline_barrier(
-					*texture_command_buffer.deref().deref(),
-					vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-					vk::PipelineStageFlags::TRANSFER,
-					vk::DependencyFlags::empty(),
-					&[],
-					&[],
-					&[texture_barrier]
-				);
-				let buffer_copy_regions = vk::BufferImageCopy::builder()
-					.image_subresource(
-						vk::ImageSubresourceLayers::builder()
-							.aspect_mask(vk::ImageAspectFlags::COLOR)
-							.layer_count(1)
-							.build()
-					)
-					.image_extent(vk::Extent3D {
-						width: image_dimensions.0,
-						height: image_dimensions.1,
-						depth: 1
-					});
+		record_command_buffer(&base.setup_command_buffer, |command_buffer| {
+			let device = command_buffer.pool().device();
+			let cb_lock = command_buffer.lock().expect("vutex poisoned");
 
-				device.cmd_copy_buffer_to_image(
-					*texture_command_buffer.deref().deref(),
-					image_buffer,
-					texture_image,
-					vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-					&[buffer_copy_regions.build()]
-				);
-				let texture_barrier_end = vk::ImageMemoryBarrier {
-					src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-					dst_access_mask: vk::AccessFlags::SHADER_READ,
-					old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-					new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-					image: texture_image,
-					subresource_range: vk::ImageSubresourceRange {
-						aspect_mask: vk::ImageAspectFlags::COLOR,
-						level_count: 1,
-						layer_count: 1,
-						..Default::default()
-					},
+			let texture_barrier = vk::ImageMemoryBarrier {
+				dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+				new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+				image: texture_image,
+				subresource_range: vk::ImageSubresourceRange {
+					aspect_mask: vk::ImageAspectFlags::COLOR,
+					level_count: 1,
+					layer_count: 1,
 					..Default::default()
-				};
-				device.cmd_pipeline_barrier(
-					*texture_command_buffer.deref().deref(),
-					vk::PipelineStageFlags::TRANSFER,
-					vk::PipelineStageFlags::FRAGMENT_SHADER,
-					vk::DependencyFlags::empty(),
-					&[],
-					&[],
-					&[texture_barrier_end]
-				);
-			}
-		);
+				},
+				..Default::default()
+			};
+			device.cmd_pipeline_barrier(
+				*cb_lock,
+				vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+				vk::PipelineStageFlags::TRANSFER,
+				vk::DependencyFlags::empty(),
+				&[],
+				&[],
+				&[texture_barrier]
+			);
+			let buffer_copy_regions = vk::BufferImageCopy::builder()
+				.image_subresource(
+					vk::ImageSubresourceLayers::builder()
+						.aspect_mask(vk::ImageAspectFlags::COLOR)
+						.layer_count(1)
+						.build()
+				)
+				.image_extent(vk::Extent3D {
+					width: image_dimensions.0,
+					height: image_dimensions.1,
+					depth: 1
+				});
+
+			device.cmd_copy_buffer_to_image(
+				*cb_lock,
+				image_buffer,
+				texture_image,
+				vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+				&[buffer_copy_regions.build()]
+			);
+			let texture_barrier_end = vk::ImageMemoryBarrier {
+				src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+				dst_access_mask: vk::AccessFlags::SHADER_READ,
+				old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+				new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+				image: texture_image,
+				subresource_range: vk::ImageSubresourceRange {
+					aspect_mask: vk::ImageAspectFlags::COLOR,
+					level_count: 1,
+					layer_count: 1,
+					..Default::default()
+				},
+				..Default::default()
+			};
+			device.cmd_pipeline_barrier(
+				*cb_lock,
+				vk::PipelineStageFlags::TRANSFER,
+				vk::PipelineStageFlags::FRAGMENT_SHADER,
+				vk::DependencyFlags::empty(),
+				&[],
+				&[],
+				&[texture_barrier_end]
+			);
+		});
+		submit_command_buffer_simple(&base.setup_command_buffer, &base.present_queue);
 
 		let sampler_info = vk::SamplerCreateInfo {
 			mag_filter: vk::Filter::LINEAR,
@@ -704,18 +699,7 @@ fn main() {
 
 		let graphic_pipeline = graphics_pipelines[0];
 
-		base.render_loop(|| {
-			let swapchain_lock = base.swapchain.lock().expect("vutex poisoned");
-			let (present_index, _) = base
-				.swapchain
-				.loader()
-				.acquire_next_image(
-					*swapchain_lock,
-					std::u64::MAX,
-					base.present_complete_semaphore,
-					vk::Fence::null()
-				)
-				.unwrap();
+		base.render_loop(|base, present_index| {
 			let clear_values = [
 				vk::ClearValue {
 					color: vk::ClearColorValue {
@@ -739,71 +723,44 @@ fn main() {
 				})
 				.clear_values(&clear_values);
 
-			record_submit_commandbuffer(
-				&base.device,
+			record_command_buffer(&base.draw_command_buffer, |command_buffer| {
+				let device = command_buffer.pool().device();
+				let cb_lock = command_buffer.lock().expect("vutex poisoned");
+
+				device.cmd_begin_render_pass(
+					*cb_lock,
+					&render_pass_begin_info,
+					vk::SubpassContents::INLINE
+				);
+				device.cmd_bind_descriptor_sets(
+					*cb_lock,
+					vk::PipelineBindPoint::GRAPHICS,
+					pipeline_layout,
+					0,
+					&descriptor_sets[..],
+					&[]
+				);
+				device.cmd_bind_pipeline(
+					*cb_lock,
+					vk::PipelineBindPoint::GRAPHICS,
+					graphic_pipeline
+				);
+				device.cmd_set_viewport(*cb_lock, 0, &viewports);
+				device.cmd_set_scissor(*cb_lock, 0, &scissors);
+				device.cmd_bind_vertex_buffers(*cb_lock, 0, &[vertex_input_buffer], &[0]);
+				device.cmd_bind_index_buffer(*cb_lock, index_buffer, 0, vk::IndexType::UINT32);
+				device.cmd_draw_indexed(*cb_lock, index_buffer_data.len() as u32, 1, 0, 0, 1);
+				// Or draw without the index buffer
+				// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
+				device.cmd_end_render_pass(*cb_lock);
+			});
+			submit_command_buffer(
 				&base.draw_command_buffer,
 				&base.present_queue,
-				&[vk::PipelineStageFlags::BOTTOM_OF_PIPE],
-				&[base.present_complete_semaphore],
-				&[base.rendering_complete_semaphore],
-				|device, cb_lock| {
-					device.cmd_begin_render_pass(
-						**cb_lock,
-						&render_pass_begin_info,
-						vk::SubpassContents::INLINE
-					);
-					device.cmd_bind_descriptor_sets(
-						**cb_lock,
-						vk::PipelineBindPoint::GRAPHICS,
-						pipeline_layout,
-						0,
-						&descriptor_sets[..],
-						&[]
-					);
-					device.cmd_bind_pipeline(
-						**cb_lock,
-						vk::PipelineBindPoint::GRAPHICS,
-						graphic_pipeline
-					);
-					device.cmd_set_viewport(**cb_lock, 0, &viewports);
-					device.cmd_set_scissor(**cb_lock, 0, &scissors);
-					device.cmd_bind_vertex_buffers(
-						**cb_lock,
-						0,
-						&[vertex_input_buffer],
-						&[0]
-					);
-					device.cmd_bind_index_buffer(
-						**cb_lock,
-						index_buffer,
-						0,
-						vk::IndexType::UINT32
-					);
-					device.cmd_draw_indexed(
-						**cb_lock,
-						index_buffer_data.len() as u32,
-						1,
-						0,
-						0,
-						1
-					);
-					// Or draw without the index buffer
-					// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
-					device.cmd_end_render_pass(**cb_lock);
-				}
+				&base.present_complete_semaphore,
+				vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+				&base.rendering_complete_semaphore
 			);
-
-			let present_info = vk::PresentInfoKHR {
-				wait_semaphore_count: 1,
-				p_wait_semaphores: &base.rendering_complete_semaphore,
-				swapchain_count: 1,
-				p_swapchains: swapchain_lock.deref(),
-				p_image_indices: &present_index,
-				..Default::default()
-			};
-			base.swapchain
-				.present(&base.present_queue, &present_info)
-				.expect("Could not present");
 		});
 		base.device.device_wait_idle().unwrap();
 
