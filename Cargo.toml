@@ -1,7 +1,8 @@
 [package]
 name = "examples"
+description = "Copied from ash, adapted to Vulkayes"
 version = "0.1.0"
-authors = ["maik klein <maikklein@googlemail.com>"]
+authors = ["TheEdward162 <TheEdward162@gmail.com>", "maik klein <maikklein@googlemail.com>"]
 edition = "2018"
 
 [dependencies]
