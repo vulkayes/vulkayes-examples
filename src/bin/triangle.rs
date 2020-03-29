@@ -1,7 +1,11 @@
-use std::{default::Default, ffi::CString, io::Cursor, mem, mem::align_of, ops::Deref};
+use std::{default::Default, ffi::CString, io::Cursor, mem, ops::Deref};
 
 use ash::{util::*, version::DeviceV1_0, vk};
-use vulkayes_core::ash;
+use vulkayes_core::{
+	ash,
+	memory::device::MappingAccessResult,
+	resource::buffer::{self, Buffer}
+};
 
 use examples::*;
 
@@ -18,7 +22,7 @@ fn main() {
 		let mut base = ExampleBase::new(1920, 1080);
 		let renderpass_attachments = [
 			vk::AttachmentDescription {
-				format: base.present_images[0].format(),
+				format: base.present_image_views[0].image().format(),
 				samples: vk::SampleCountFlags::TYPE_1,
 				load_op: vk::AttachmentLoadOp::CLEAR,
 				store_op: vk::AttachmentStoreOp::STORE,
@@ -71,8 +75,11 @@ fn main() {
 		let framebuffers: Vec<vk::Framebuffer> = base
 			.present_image_views
 			.iter()
-			.map(|&present_image_view| {
-				let framebuffer_attachments = [present_image_view, base.depth_image_view];
+			.map(|present_image_view| {
+				let framebuffer_attachments = [
+					*present_image_view.deref().deref(),
+					*base.depth_image_view.deref().deref()
+				];
 				let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
 					.render_pass(renderpass)
 					.attachments(&framebuffer_attachments)
@@ -87,118 +94,74 @@ fn main() {
 			.collect();
 
 		let index_buffer_data = [0u32, 1, 2];
-		let index_buffer_info = vk::BufferCreateInfo::builder()
-			.size(std::mem::size_of_val(&index_buffer_data) as u64)
-			.usage(vk::BufferUsageFlags::INDEX_BUFFER)
-			.sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-		let index_buffer = base.device.create_buffer(&index_buffer_info, None).unwrap();
-		let index_buffer_memory_req = base.device.get_buffer_memory_requirements(index_buffer);
-		let index_buffer_memory_index = find_memorytype_index(
-			&index_buffer_memory_req,
-			&base.device_memory_properties,
-			vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
-		)
-		.expect("Unable to find suitable memorytype for the index buffer.");
-
-		let index_allocate_info = vk::MemoryAllocateInfo {
-			allocation_size: index_buffer_memory_req.size,
-			memory_type_index: index_buffer_memory_index,
-			..Default::default()
-		};
-		let index_buffer_memory = base
-			.device
-			.allocate_memory(&index_allocate_info, None)
-			.unwrap();
-		let index_ptr = base
-			.device
-			.map_memory(
-				index_buffer_memory,
-				0,
-				index_buffer_memory_req.size,
-				vk::MemoryMapFlags::empty()
+		let index_buffer = {
+			let buffer = Buffer::new(
+				base.device.clone(),
+				std::num::NonZeroU64::new(std::mem::size_of_val(&index_buffer_data) as u64)
+					.unwrap(),
+				vk::BufferUsageFlags::INDEX_BUFFER,
+				base.present_queue.deref().into(),
+				buffer::params::AllocatorParams::Some {
+					allocator: &base.device_memory_allocator,
+					requirements: vk::MemoryPropertyFlags::HOST_VISIBLE
+						| vk::MemoryPropertyFlags::HOST_COHERENT
+				},
+				Default::default()
 			)
-			.unwrap();
-		let mut index_slice = Align::new(
-			index_ptr,
-			align_of::<u32>() as u64,
-			index_buffer_memory_req.size
-		);
-		index_slice.copy_from_slice(&index_buffer_data);
-		base.device.unmap_memory(index_buffer_memory);
-		base.device
-			.bind_buffer_memory(index_buffer, index_buffer_memory, 0)
-			.unwrap();
+			.expect("Could not create index buffer");
 
-		let vertex_input_buffer_info = vk::BufferCreateInfo {
-			size: 3 * std::mem::size_of::<Vertex>() as u64,
-			usage: vk::BufferUsageFlags::VERTEX_BUFFER,
-			sharing_mode: vk::SharingMode::EXCLUSIVE,
-			..Default::default()
+			let memory = buffer.memory().unwrap();
+			memory
+				.map_access(|mut access| {
+					access.write_slice(&index_buffer_data, Default::default());
+					MappingAccessResult::Unmap
+				})
+				.expect("could not map memory");
+
+			buffer
 		};
 
-		let vertex_input_buffer = base
-			.device
-			.create_buffer(&vertex_input_buffer_info, None)
-			.unwrap();
-
-		let vertex_input_buffer_memory_req = base
-			.device
-			.get_buffer_memory_requirements(vertex_input_buffer);
-
-		let vertex_input_buffer_memory_index = find_memorytype_index(
-			&vertex_input_buffer_memory_req,
-			&base.device_memory_properties,
-			vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
-		)
-		.expect("Unable to find suitable memorytype for the vertex buffer.");
-
-		let vertex_buffer_allocate_info = vk::MemoryAllocateInfo {
-			allocation_size: vertex_input_buffer_memory_req.size,
-			memory_type_index: vertex_input_buffer_memory_index,
-			..Default::default()
-		};
-
-		let vertex_input_buffer_memory = base
-			.device
-			.allocate_memory(&vertex_buffer_allocate_info, None)
-			.unwrap();
-
-		let vertices = [
-			Vertex {
-				pos: [-1.0, 1.0, 0.0, 1.0],
-				color: [0.0, 1.0, 0.0, 1.0]
-			},
-			Vertex {
-				pos: [1.0, 1.0, 0.0, 1.0],
-				color: [0.0, 0.0, 1.0, 1.0]
-			},
-			Vertex {
-				pos: [0.0, -1.0, 0.0, 1.0],
-				color: [1.0, 0.0, 0.0, 1.0]
-			}
-		];
-
-		let vert_ptr = base
-			.device
-			.map_memory(
-				vertex_input_buffer_memory,
-				0,
-				vertex_input_buffer_memory_req.size,
-				vk::MemoryMapFlags::empty()
+		let vertex_buffer = {
+			let buffer = Buffer::new(
+				base.device.clone(),
+				std::num::NonZeroU64::new(3 * std::mem::size_of::<Vertex>() as u64).unwrap(),
+				vk::BufferUsageFlags::VERTEX_BUFFER,
+				base.present_queue.deref().into(),
+				buffer::params::AllocatorParams::Some {
+					allocator: &base.device_memory_allocator,
+					requirements: vk::MemoryPropertyFlags::HOST_VISIBLE
+						| vk::MemoryPropertyFlags::HOST_COHERENT
+				},
+				Default::default()
 			)
-			.unwrap();
+			.expect("Could not create index buffer");
 
-		let mut vert_align = Align::new(
-			vert_ptr,
-			align_of::<Vertex>() as u64,
-			vertex_input_buffer_memory_req.size
-		);
-		vert_align.copy_from_slice(&vertices);
-		base.device.unmap_memory(vertex_input_buffer_memory);
-		base.device
-			.bind_buffer_memory(vertex_input_buffer, vertex_input_buffer_memory, 0)
-			.unwrap();
+			let vertices = [
+				Vertex {
+					pos: [-1.0, 1.0, 0.0, 1.0],
+					color: [0.0, 1.0, 0.0, 1.0]
+				},
+				Vertex {
+					pos: [1.0, 1.0, 0.0, 1.0],
+					color: [0.0, 0.0, 1.0, 1.0]
+				},
+				Vertex {
+					pos: [0.0, -1.0, 0.0, 1.0],
+					color: [1.0, 0.0, 0.0, 1.0]
+				}
+			];
+
+			let memory = buffer.memory().unwrap();
+			memory
+				.map_access(|mut access| {
+					access.write_slice(&vertices, Default::default());
+					MappingAccessResult::Unmap
+				})
+				.expect("could not map memory");
+
+			buffer
+		};
+
 		let mut vertex_spv_file =
 			Cursor::new(&include_bytes!("../../shader/triangle/vert.spv")[..]);
 		let mut frag_spv_file = Cursor::new(&include_bytes!("../../shader/triangle/frag.spv")[..]);
@@ -399,8 +362,18 @@ fn main() {
 				);
 				device.cmd_set_viewport(*cb_lock, 0, &viewports);
 				device.cmd_set_scissor(*cb_lock, 0, &scissors);
-				device.cmd_bind_vertex_buffers(*cb_lock, 0, &[vertex_input_buffer], &[0]);
-				device.cmd_bind_index_buffer(*cb_lock, index_buffer, 0, vk::IndexType::UINT32);
+				device.cmd_bind_vertex_buffers(
+					*cb_lock,
+					0,
+					&[*vertex_buffer.deref().deref()],
+					&[0]
+				);
+				device.cmd_bind_index_buffer(
+					*cb_lock,
+					*index_buffer.deref().deref(),
+					0,
+					vk::IndexType::UINT32
+				);
 				device.cmd_draw_indexed(*cb_lock, index_buffer_data.len() as u32, 1, 0, 0, 1);
 				// Or draw without the index buffer
 				// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
@@ -424,10 +397,6 @@ fn main() {
 			.destroy_shader_module(vertex_shader_module, None);
 		base.device
 			.destroy_shader_module(fragment_shader_module, None);
-		base.device.free_memory(index_buffer_memory, None);
-		base.device.destroy_buffer(index_buffer, None);
-		base.device.free_memory(vertex_input_buffer_memory, None);
-		base.device.destroy_buffer(vertex_input_buffer, None);
 		for framebuffer in framebuffers {
 			base.device.destroy_framebuffer(framebuffer, None);
 		}

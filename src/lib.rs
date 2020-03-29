@@ -1,8 +1,4 @@
-use std::{
-	default::Default,
-	num::NonZeroU32,
-	ops::{Deref, Drop}
-};
+use std::{default::Default, num::NonZeroU32, ops::Deref};
 
 use ash::{version::DeviceV1_0, vk};
 use vulkayes_core::{
@@ -11,14 +7,14 @@ use vulkayes_core::{
 	device::Device,
 	entry::Entry,
 	instance::{ApplicationInfo, Instance},
-	physical_device::enumerate::PhysicalDeviceMemoryProperties,
+	memory::device::naive::NaiveDeviceMemoryAllocator,
 	queue::Queue,
-	resource::ImageSize,
-	swapchain::{
-		image::{SwapchainCreateImageInfo, SwapchainImage},
-		Swapchain,
-		SwapchainCreateInfo
+	resource::image::{
+		params::{AllocatorParams, ImageSize, ImageViewRange, MipmapLevels},
+		view::ImageView,
+		Image
 	},
+	swapchain::{image::SwapchainCreateImageInfo, Swapchain, SwapchainCreateInfo},
 	sync::semaphore::{BinarySemaphore, Semaphore},
 	util::fmt::VkVersion,
 	Vrc
@@ -139,68 +135,66 @@ pub fn submit_command_buffer(
 		.expect("fence wait failed");
 }
 
-pub fn find_memorytype_index(
-	memory_req: &vk::MemoryRequirements,
-	memory_prop: &PhysicalDeviceMemoryProperties,
-	flags: vk::MemoryPropertyFlags
-) -> Option<u32> {
-	// Try to find an exactly matching memory flag
-	let best_suitable_index =
-		find_memorytype_index_f(memory_req, memory_prop, flags, |property_flags, flags| {
-			property_flags == flags
-		});
-	if best_suitable_index.is_some() {
-		return best_suitable_index
-	}
-	// Otherwise find a memory flag that works
-	find_memorytype_index_f(memory_req, memory_prop, flags, |property_flags, flags| {
-		property_flags & flags == flags
-	})
-}
-
-pub fn find_memorytype_index_f<F: Fn(vk::MemoryPropertyFlags, vk::MemoryPropertyFlags) -> bool>(
-	memory_req: &vk::MemoryRequirements,
-	memory_prop: &PhysicalDeviceMemoryProperties,
-	flags: vk::MemoryPropertyFlags,
-	f: F
-) -> Option<u32> {
-	let mut memory_type_bits = memory_req.memory_type_bits;
-	for (index, ref memory_type) in memory_prop.memory_types.iter().enumerate() {
-		if memory_type_bits & 1 == 1 && f(memory_type.property_flags, flags) {
-			return Some(index as u32)
-		}
-		memory_type_bits >>= 1;
-	}
-	None
-}
+// pub fn find_memorytype_index(
+// memory_req: &vk::MemoryRequirements,
+// memory_prop: &PhysicalDeviceMemoryProperties,
+// flags: vk::MemoryPropertyFlags
+// ) -> Option<u32> {
+// Try to find an exactly matching memory flag
+// let best_suitable_index =
+// find_memorytype_index_f(memory_req, memory_prop, flags, |property_flags, flags| {
+// property_flags == flags
+// });
+// if best_suitable_index.is_some() {
+// return best_suitable_index
+// }
+// Otherwise find a memory flag that works
+// find_memorytype_index_f(memory_req, memory_prop, flags, |property_flags, flags| {
+// property_flags & flags == flags
+// })
+// }
+//
+//
+// pub fn find_memorytype_index_f<F: Fn(vk::MemoryPropertyFlags, vk::MemoryPropertyFlags) -> bool>(
+// memory_req: &vk::MemoryRequirements,
+// memory_prop: &PhysicalDeviceMemoryProperties,
+// flags: vk::MemoryPropertyFlags,
+// f: F
+// ) -> Option<u32> {
+// let mut memory_type_bits = memory_req.memory_type_bits;
+// for (index, ref memory_type) in memory_prop.memory_types.iter().enumerate() {
+// if memory_type_bits & 1 == 1 && f(memory_type.property_flags, flags) {
+// return Some(index as u32)
+// }
+// memory_type_bits >>= 1;
+// }
+// None
+// }
 
 pub struct ExampleBase {
-	pub instance: Vrc<Instance>, //
-	pub device: Vrc<Device>,     //
+	pub instance: Vrc<Instance>,
+	pub device: Vrc<Device>,
 
-	event_loop: Option<EventLoop<()>>, //
+	event_loop: Option<EventLoop<()>>,
 
-	pub device_memory_properties: PhysicalDeviceMemoryProperties, //
-	pub present_queue: Vrc<Queue>,                                //
+	pub present_queue: Vrc<Queue>,
 
-	pub window: winit::window::Window, //
+	pub window: winit::window::Window,
 	pub surface_size: ImageSize,
 
-	pub swapchain: Vrc<Swapchain>,                            //
-	pub swapchain_create_info: SwapchainCreateInfo<[u32; 1]>, //
-	pub present_images: Vec<Vrc<SwapchainImage>>,             //
-	pub present_image_views: Vec<vk::ImageView>,
+	pub swapchain: Vrc<Swapchain>,
+	pub swapchain_create_info: SwapchainCreateInfo<[u32; 1]>,
+	pub present_image_views: Vec<Vrc<ImageView>>,
 
-	pub command_pool: Vrc<CommandPool>,           //
-	pub draw_command_buffer: Vrc<CommandBuffer>,  //
-	pub setup_command_buffer: Vrc<CommandBuffer>, //
+	pub command_pool: Vrc<CommandPool>,
+	pub draw_command_buffer: Vrc<CommandBuffer>,
+	pub setup_command_buffer: Vrc<CommandBuffer>,
 
-	pub depth_image: vk::Image,
-	pub depth_image_view: vk::ImageView,
-	pub depth_image_memory: vk::DeviceMemory,
+	pub device_memory_allocator: NaiveDeviceMemoryAllocator,
+	pub depth_image_view: Vrc<ImageView>,
 
-	pub present_complete_semaphore: BinarySemaphore,   //
-	pub rendering_complete_semaphore: BinarySemaphore, //
+	pub present_complete_semaphore: BinarySemaphore,
+	pub rendering_complete_semaphore: BinarySemaphore,
 
 	pub swapchain_outdated: bool
 }
@@ -241,7 +235,10 @@ impl ExampleBase {
 		match queue_present(
 			&self.present_queue,
 			[&self.rendering_complete_semaphore],
-			[&self.present_images[present_index as usize]],
+			[self.present_image_views[present_index as usize]
+				.image()
+				.try_swapchain_image()
+				.unwrap()],
 			false
 		) {
 			vulkayes_core::queue::error::QueuePresentMultipleResult::Single(result) => match result
@@ -387,8 +384,11 @@ impl ExampleBase {
 			(device_data.device, present_queue)
 		};
 
+		let device_memory_allocator = NaiveDeviceMemoryAllocator::new(device.clone());
+
 		let swapchain_create_info =
 			Self::swapchain_create_info(&surface, &present_queue, window_width, window_height);
+		let surface_size: ImageSize = swapchain_create_info.image_info.image_size.into();
 		let (swapchain, present_images) = {
 			let s = Swapchain::new(
 				device.clone(),
@@ -417,83 +417,62 @@ impl ExampleBase {
 		let draw_command_buffer = command_buffers.pop().unwrap();
 		let setup_command_buffer = command_buffers.pop().unwrap();
 
-		unsafe {
-			let present_image_views: Vec<vk::ImageView> = present_images
-				.iter()
-				.map(|image| {
-					let create_view_info = vk::ImageViewCreateInfo::builder()
-						.view_type(vk::ImageViewType::TYPE_2D)
-						.format(image.format())
-						.components(vk::ComponentMapping {
-							r: vk::ComponentSwizzle::R,
-							g: vk::ComponentSwizzle::G,
-							b: vk::ComponentSwizzle::B,
-							a: vk::ComponentSwizzle::A
-						})
-						.subresource_range(vk::ImageSubresourceRange {
-							aspect_mask: vk::ImageAspectFlags::COLOR,
-							base_mip_level: 0,
-							level_count: 1,
-							base_array_layer: 0,
-							layer_count: 1
-						})
-						.image(*image.deref().deref().deref());
-					device.create_image_view(&create_view_info, None).unwrap()
-				})
-				.collect();
+		let present_image_views: Vec<Vrc<ImageView>> = present_images
+			.into_iter()
+			.map(|image| {
+				ImageView::new(
+					image.into(),
+					ImageViewRange::Type2D(0, vulkayes_core::NONZEROU32_ONE, 0),
+					None,
+					Default::default(),
+					vk::ImageAspectFlags::COLOR,
+					Default::default()
+				)
+				.expect("Could not create image view")
+			})
+			.collect();
 
-			let device_memory_properties = device.physical_device().memory_properties();
-			let depth_image_create_info = vk::ImageCreateInfo::builder()
-				.image_type(vk::ImageType::TYPE_2D)
-				.format(vk::Format::D16_UNORM)
-				.extent(present_images[0].size().into())
-				.mip_levels(1)
-				.array_layers(1)
-				.samples(vk::SampleCountFlags::TYPE_1)
-				.tiling(vk::ImageTiling::OPTIMAL)
-				.usage(vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT)
-				.sharing_mode(vk::SharingMode::EXCLUSIVE);
-
-			let depth_image = device.create_image(&depth_image_create_info, None).unwrap();
-			let depth_image_memory_req = device.get_image_memory_requirements(depth_image);
-			let depth_image_memory_index = find_memorytype_index(
-				&depth_image_memory_req,
-				&device_memory_properties,
-				vk::MemoryPropertyFlags::DEVICE_LOCAL
+		let depth_image_view = {
+			let depth_image = Image::new(
+				device.clone(),
+				vk::Format::D16_UNORM,
+				surface_size.into(),
+				Default::default(),
+				vk::ImageUsageFlags::DEPTH_STENCIL_ATTACHMENT,
+				present_queue.deref().into(),
+				AllocatorParams::Some {
+					allocator: &device_memory_allocator,
+					requirements: vk::MemoryPropertyFlags::DEVICE_LOCAL
+				},
+				Default::default()
 			)
-			.expect("Unable to find suitable memory index for depth image.");
+			.expect("Could not create depth image");
 
-			let depth_image_allocate_info = vk::MemoryAllocateInfo::builder()
-				.allocation_size(depth_image_memory_req.size)
-				.memory_type_index(depth_image_memory_index);
+			ImageView::new(
+				depth_image.into(),
+				ImageViewRange::Type2D(0, vulkayes_core::NONZEROU32_ONE, 0),
+				None,
+				Default::default(),
+				vk::ImageAspectFlags::DEPTH,
+				Default::default()
+			)
+			.expect("Chould not create depth image view")
+		};
 
-			let depth_image_memory = device
-				.allocate_memory(&depth_image_allocate_info, None)
-				.unwrap();
+		record_command_buffer(&setup_command_buffer, |command_buffer| {
+			let cb_lock = command_buffer.lock().expect("vutex poisoned");
 
-			device
-				.bind_image_memory(depth_image, depth_image_memory, 0)
-				.expect("Unable to bind depth image memory");
+			let layout_transition_barriers = vk::ImageMemoryBarrier::builder()
+				.image(*depth_image_view.image().deref().deref())
+				.old_layout(vk::ImageLayout::UNDEFINED)
+				.dst_access_mask(
+					vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
+						| vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
+				)
+				.new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
+				.subresource_range(depth_image_view.subresource_range().into());
 
-			record_command_buffer(&setup_command_buffer, |command_buffer| {
-				let cb_lock = command_buffer.lock().expect("vutex poisoned");
-
-				let layout_transition_barriers = vk::ImageMemoryBarrier::builder()
-					.image(depth_image)
-					.dst_access_mask(
-						vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_READ
-							| vk::AccessFlags::DEPTH_STENCIL_ATTACHMENT_WRITE
-					)
-					.new_layout(vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL)
-					.old_layout(vk::ImageLayout::UNDEFINED)
-					.subresource_range(
-						vk::ImageSubresourceRange::builder()
-							.aspect_mask(vk::ImageAspectFlags::DEPTH)
-							.layer_count(1)
-							.level_count(1)
-							.build()
-					);
-
+			unsafe {
 				command_buffer.pool().device().cmd_pipeline_barrier(
 					*cb_lock,
 					vk::PipelineStageFlags::BOTTOM_OF_PIPE,
@@ -503,53 +482,33 @@ impl ExampleBase {
 					&[],
 					&[layout_transition_barriers.build()]
 				);
-			});
-
-			submit_command_buffer_simple(&setup_command_buffer, &present_queue);
-
-			let depth_image_view_info = vk::ImageViewCreateInfo::builder()
-				.subresource_range(
-					vk::ImageSubresourceRange::builder()
-						.aspect_mask(vk::ImageAspectFlags::DEPTH)
-						.level_count(1)
-						.layer_count(1)
-						.build()
-				)
-				.image(depth_image)
-				.format(depth_image_create_info.format)
-				.view_type(vk::ImageViewType::TYPE_2D);
-
-			let depth_image_view = device
-				.create_image_view(&depth_image_view_info, None)
-				.unwrap();
-
-			let present_complete_semaphore = Semaphore::binary(device.clone(), Default::default())
-				.expect("Could not create semaphore");
-			let rendering_complete_semaphore =
-				Semaphore::binary(device.clone(), Default::default())
-					.expect("Could not create semaphore");
-			ExampleBase {
-				event_loop: Some(event_loop),
-				instance,
-				device,
-				device_memory_properties,
-				present_queue,
-				swapchain,
-				swapchain_create_info,
-				surface_size: present_images[0].size(),
-				present_images,
-				present_image_views,
-				command_pool,
-				draw_command_buffer,
-				setup_command_buffer,
-				depth_image,
-				depth_image_view,
-				present_complete_semaphore,
-				rendering_complete_semaphore,
-				window,
-				depth_image_memory,
-				swapchain_outdated: false
 			}
+		});
+		submit_command_buffer_simple(&setup_command_buffer, &present_queue);
+
+		let present_complete_semaphore = Semaphore::binary(device.clone(), Default::default())
+			.expect("Could not create semaphore");
+		let rendering_complete_semaphore = Semaphore::binary(device.clone(), Default::default())
+			.expect("Could not create semaphore");
+
+		ExampleBase {
+			event_loop: Some(event_loop),
+			instance,
+			device,
+			present_queue,
+			swapchain,
+			swapchain_create_info,
+			surface_size,
+			present_image_views,
+			command_pool,
+			draw_command_buffer,
+			setup_command_buffer,
+			device_memory_allocator,
+			depth_image_view,
+			present_complete_semaphore,
+			rendering_complete_semaphore,
+			window,
+			swapchain_outdated: false
 		}
 	}
 
@@ -603,8 +562,12 @@ impl ExampleBase {
 				min_image_count: NonZeroU32::new(desired_image_count).unwrap(),
 				image_format: surface_format.format,
 				image_color_space: surface_format.color_space,
-				image_extent: surface_resolution,
-				image_array_layers: vulkayes_core::NONZEROU32_ONE,
+				image_size: ImageSize::new_2d(
+					surface_resolution[0],
+					surface_resolution[1],
+					vulkayes_core::NONZEROU32_ONE,
+					MipmapLevels::One()
+				),
 				image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
 			},
 			sharing_mode: queue.into(),
@@ -612,22 +575,6 @@ impl ExampleBase {
 			composite_alpha: vk::CompositeAlphaFlagsKHR::OPAQUE,
 			present_mode,
 			clipped: true
-		}
-	}
-}
-
-impl Drop for ExampleBase {
-	fn drop(&mut self) {
-		unsafe {
-			self.device.device_wait_idle().unwrap();
-
-			self.device.destroy_image_view(self.depth_image_view, None);
-			self.device.destroy_image(self.depth_image, None);
-			self.device.free_memory(self.depth_image_memory, None);
-
-			for &image_view in self.present_image_views.iter() {
-				self.device.destroy_image_view(image_view, None);
-			}
 		}
 	}
 }
