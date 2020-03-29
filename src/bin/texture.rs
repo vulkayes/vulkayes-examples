@@ -133,7 +133,7 @@ fn main() {
 
 			let memory = buffer.memory().unwrap();
 			memory
-				.map_access(|mut access| {
+				.map_memory_with(|mut access| {
 					access.write_slice(&index_buffer_data, Default::default());
 					MappingAccessResult::Unmap
 				})
@@ -177,7 +177,7 @@ fn main() {
 
 			let memory = buffer.memory().unwrap();
 			memory
-				.map_access(|mut access| {
+				.map_memory_with(|mut access| {
 					access.write_slice(&vertices, Default::default());
 					MappingAccessResult::Unmap
 				})
@@ -210,7 +210,7 @@ fn main() {
 
 			let memory = buffer.memory().unwrap();
 			memory
-				.map_access(|mut access| {
+				.map_memory_with(|mut access| {
 					access.write_slice(&[uniform_color_buffer_data], Default::default());
 					MappingAccessResult::Unmap
 				})
@@ -242,7 +242,7 @@ fn main() {
 
 			let memory = buffer.memory().unwrap();
 			memory
-				.map_access(|mut access| {
+				.map_memory_with(|mut access| {
 					access.write_slice(&image_data, Default::default());
 					MappingAccessResult::Unmap
 				})
