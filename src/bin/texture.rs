@@ -134,7 +134,7 @@ fn main() {
 			let memory = buffer.memory().unwrap();
 			memory
 				.map_memory_with(|mut access| {
-					access.write_slice(&index_buffer_data, Default::default());
+					access.write_slice(&index_buffer_data, 0, Default::default());
 					MappingAccessResult::Unmap
 				})
 				.expect("could not map memory");
@@ -178,7 +178,7 @@ fn main() {
 			let memory = buffer.memory().unwrap();
 			memory
 				.map_memory_with(|mut access| {
-					access.write_slice(&vertices, Default::default());
+					access.write_slice(&vertices, 0, Default::default());
 					MappingAccessResult::Unmap
 				})
 				.expect("could not map memory");
@@ -211,7 +211,7 @@ fn main() {
 			let memory = buffer.memory().unwrap();
 			memory
 				.map_memory_with(|mut access| {
-					access.write_slice(&[uniform_color_buffer_data], Default::default());
+					access.write_slice(&[uniform_color_buffer_data], 0, Default::default());
 					MappingAccessResult::Unmap
 				})
 				.expect("could not map memory");
@@ -243,7 +243,7 @@ fn main() {
 			let memory = buffer.memory().unwrap();
 			memory
 				.map_memory_with(|mut access| {
-					access.write_slice(&image_data, Default::default());
+					access.write_slice(&image_data, 0, Default::default());
 					MappingAccessResult::Unmap
 				})
 				.expect("could not map memory");
