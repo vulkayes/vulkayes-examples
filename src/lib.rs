@@ -1,12 +1,16 @@
-use std::{default::Default, num::NonZeroU32, ops::Deref};
+use std::{default::Default, num::NonZeroU32, ops::Deref, sync::mpsc};
+
+use winit::window::Window;
 
 use ash::{version::DeviceV1_0, vk};
+
 use vulkayes_core::{
 	ash,
 	command::{buffer::CommandBuffer, pool::CommandPool},
 	device::Device,
 	entry::Entry,
 	instance::{ApplicationInfo, Instance},
+	log,
 	memory::device::naive::NaiveDeviceMemoryAllocator,
 	queue::Queue,
 	resource::image::{
@@ -21,6 +25,11 @@ use vulkayes_core::{
 };
 use vulkayes_window::winit::winit;
 use winit::event_loop::EventLoop;
+
+#[macro_use]
+pub mod dirty_mark;
+
+pub mod state;
 
 pub fn record_command_buffer(
 	command_buffer: &Vrc<CommandBuffer>,
@@ -135,51 +144,19 @@ pub fn submit_command_buffer(
 		.expect("fence wait failed");
 }
 
-// pub fn find_memorytype_index(
-// memory_req: &vk::MemoryRequirements,
-// memory_prop: &PhysicalDeviceMemoryProperties,
-// flags: vk::MemoryPropertyFlags
-// ) -> Option<u32> {
-// Try to find an exactly matching memory flag
-// let best_suitable_index =
-// find_memorytype_index_f(memory_req, memory_prop, flags, |property_flags, flags| {
-// property_flags == flags
-// });
-// if best_suitable_index.is_some() {
-// return best_suitable_index
-// }
-// Otherwise find a memory flag that works
-// find_memorytype_index_f(memory_req, memory_prop, flags, |property_flags, flags| {
-// property_flags & flags == flags
-// })
-// }
-//
-//
-// pub fn find_memorytype_index_f<F: Fn(vk::MemoryPropertyFlags, vk::MemoryPropertyFlags) -> bool>(
-// memory_req: &vk::MemoryRequirements,
-// memory_prop: &PhysicalDeviceMemoryProperties,
-// flags: vk::MemoryPropertyFlags,
-// f: F
-// ) -> Option<u32> {
-// let mut memory_type_bits = memory_req.memory_type_bits;
-// for (index, ref memory_type) in memory_prop.memory_types.iter().enumerate() {
-// if memory_type_bits & 1 == 1 && f(memory_type.property_flags, flags) {
-// return Some(index as u32)
-// }
-// memory_type_bits >>= 1;
-// }
-// None
-// }
-
+#[derive(Debug)]
+enum InputEvent {
+	Exit
+}
 pub struct ExampleBase {
 	pub instance: Vrc<Instance>,
 	pub device: Vrc<Device>,
 
-	event_loop: Option<EventLoop<()>>,
+	input_receiver: mpsc::Receiver<InputEvent>,
 
 	pub present_queue: Vrc<Queue>,
 
-	pub window: winit::window::Window,
+	// pub window: winit::window::Window,
 	pub surface_size: ImageSize,
 
 	pub swapchain: Vrc<Swapchain>,
@@ -196,10 +173,74 @@ pub struct ExampleBase {
 	pub present_complete_semaphore: BinarySemaphore,
 	pub rendering_complete_semaphore: BinarySemaphore,
 
-	pub swapchain_outdated: bool
+	pub swapchain_outdated: u8
 }
-
 impl ExampleBase {
+	/// Converts the current thread to the input thread by created an event loop in it.
+	///
+	/// A new thread is spawned with `new_thread_fn`.
+	///
+	/// This function is designed this way because on MacOS only the main thread can have an EventLoop on it,
+	/// so this must be called from the main thread.
+	pub fn with_input_thread(
+		window_size: [NonZeroU32; 2],
+		new_thread_fn: impl FnOnce(Self) + Send + 'static
+	) -> ! {
+		// Register a logger since Vulkayes logs through the log crate
+		let logger = edwardium_logger::Logger::new(
+			[edwardium_logger::targets::stderr::StderrTarget::new(
+				log::Level::Trace
+			)],
+			std::time::Instant::now()
+		);
+		logger.init_boxed().expect("Could not initialize logger");
+
+		let event_loop = EventLoop::new();
+		let window = winit::window::WindowBuilder::new()
+			.with_title("Ash - Example")
+			.with_inner_size(winit::dpi::LogicalSize::new(
+				f64::from(window_size[0].get()),
+				f64::from(window_size[1].get())
+			))
+			.build(&event_loop)
+			.expect("could not create window");
+
+		// A little something about macOS and winit
+		// On macOS, both the even loop and the window must stay in the main thread while rendering.
+		// However, the window is needed to create surface, which needs an instance, which means it needs to happen in the renderer thread.
+		// Here we have to move the window into the new thread and then send it back using a channel.
+		let (oneoff_sender, oneoff_receiver) = mpsc::channel::<Window>();
+
+		let (input_sender, input_receiver) = mpsc::channel::<InputEvent>();
+		std::thread::spawn(move || {
+			let base = Self::new(window_size, window, input_receiver, oneoff_sender);
+
+			new_thread_fn(base)
+		});
+
+		// We don't actually need the window after, but it has to be in this thread. Weird.
+		let _window = oneoff_receiver
+			.recv()
+			.expect("could not receive window back");
+
+		// Technically result is now `!`, but this can be trivially replaced by `run_return` where supported
+		event_loop.run(move |event, _target, control_flow| {
+			// Handle window close event
+			match event {
+				winit::event::Event::WindowEvent {
+					event: winit::event::WindowEvent::CloseRequested,
+					..
+				} => {
+					input_sender
+						.send(InputEvent::Exit)
+						.expect("could not send input event");
+					*control_flow = winit::event_loop::ControlFlow::Exit;
+				}
+				_ => ()
+			}
+		})
+	}
+
 	fn draw(&mut self, f: &impl Fn(&mut Self, u32)) {
 		vulkayes_core::const_queue_present!(
 			pub fn queue_present(
@@ -210,11 +251,20 @@ impl ExampleBase {
 			) -> QueuePresentMultipleResult<[QueuePresentResult; _]>;
 		);
 
-
-		if self.swapchain_outdated {
-			let _window_size = self.window.inner_size();
+		if self.swapchain_outdated > 120 {
+			panic!("Swapchain outdated for 120 frames");
+		} else if self.swapchain_outdated > 0 {
+			// let _window_size = self.window.inner_size();
 			// TODO: Recreate swapchain and framebuffers
-			self.swapchain_outdated = false;
+
+			if self.swapchain_outdated > 1 {
+				log::warn!(
+					"Swapchain outdated for {} frames now",
+					self.swapchain_outdated
+				);
+			}
+
+			// self.swapchain_outdated = 0;
 		}
 
 		let present_index = match self.swapchain.acquire_next(
@@ -224,7 +274,7 @@ impl ExampleBase {
 			Ok(vulkayes_core::swapchain::error::AcquireResultValue::SUCCESS(i)) => i,
 			Ok(vulkayes_core::swapchain::error::AcquireResultValue::SUBOPTIMAL_KHR(_))
 			| Err(vulkayes_core::swapchain::error::AcquireError::ERROR_OUT_OF_DATE_KHR) => {
-				self.swapchain_outdated = true;
+				self.swapchain_outdated += 1;
 				return
 			}
 			Err(e) => panic!("{}", e)
@@ -246,7 +296,7 @@ impl ExampleBase {
 				Ok(vulkayes_core::queue::error::QueuePresentResultValue::SUCCESS) => (),
 				Ok(vulkayes_core::queue::error::QueuePresentResultValue::SUBOPTIMAL_KHR)
 				| Err(vulkayes_core::queue::error::QueuePresentError::ERROR_OUT_OF_DATE_KHR) => {
-					self.swapchain_outdated = true;
+					self.swapchain_outdated += 1;
 				}
 				Err(e) => panic!("{}", e)
 			},
@@ -255,56 +305,50 @@ impl ExampleBase {
 	}
 
 	pub fn render_loop(&mut self, f: impl Fn(&mut Self, u32)) {
-		use winit::{
-			event::{Event, WindowEvent},
-			platform::desktop::EventLoopExtDesktop
-		};
+		unsafe {
+			dirty_mark::init();
+		}
 
-		let mut event_loop = self.event_loop.take().unwrap();
-		event_loop.run_return(|event, _target, control_flow| {
-			self.draw(&f);
-
-			// Handle window close event
-			match event {
-				Event::WindowEvent {
-					event: WindowEvent::CloseRequested,
-					..
-				} => {
-					*control_flow = winit::event_loop::ControlFlow::Exit;
+		'render: loop {
+			// handle new events
+			while let Ok(event) = self.input_receiver.try_recv() {
+				log::trace!("Input event {:?}", event);
+				match event {
+					InputEvent::Exit => break 'render
 				}
-				_ => ()
 			}
-		});
 
-		self.event_loop = Some(event_loop);
+			// draw
+			log::trace!("Draw frame before");
+			let before = dirty_mark::before();
+			self.draw(&f);
+			unsafe {
+				dirty_mark::after([before, before]);
+			}
+			log::trace!("Draw frame after\n");
+		}
+
+		unsafe {
+			dirty_mark::flush();
+		}
 	}
 
-	pub fn new(window_width: u32, window_height: u32) -> Self {
-		// Register a logger since Vulkayes logs through the log crate
-		let logger = edwardium_logger::Logger::new(
-			[edwardium_logger::targets::stderr::StderrTarget::new(
-				log::Level::Trace
-			)],
-			std::time::Instant::now()
-		);
-		logger.init_boxed().expect("Could not initialize logger");
-
-		let event_loop = EventLoop::new();
-		let window = winit::window::WindowBuilder::new()
-			.with_title("Ash - Example")
-			.with_inner_size(winit::dpi::LogicalSize::new(
-				f64::from(window_width),
-				f64::from(window_height)
-			))
-			.build(&event_loop)
-			.unwrap();
-
+	fn new(
+		window_size: [NonZeroU32; 2],
+		window: Window,
+		input_receiver: mpsc::Receiver<InputEvent>,
+		oneoff_sender: mpsc::Sender<Window>
+	) -> Self {
 		// Create Entry, which is the entry point into the Vulkan API.
 		// The default entry is loaded as a dynamic library.
 		let entry = Entry::new().unwrap();
 
 		// Create instance from loaded entry
 		// Also enable validation layers and require surface extensions as defined in vulkayes_window
+		let layers = sub_release! {
+			["VK_LAYER_LUNARG_standard_validation"].iter().map(|&s| s),
+			std::iter::empty()
+		};
 		// Lastly, register Default debug callbacks that log using the log crate
 		let instance = Instance::new(
 			entry,
@@ -314,7 +358,7 @@ impl ExampleBase {
 				api_version: VkVersion::new(1, 0, 0),
 				..Default::default()
 			},
-			["VK_LAYER_LUNARG_standard_validation"].iter().map(|&s| s),
+			layers,
 			vulkayes_window::winit::required_surface_extensions()
 				.as_ref()
 				.iter()
@@ -331,6 +375,7 @@ impl ExampleBase {
 		let surface =
 			vulkayes_window::winit::create_surface(instance.clone(), &window, Default::default())
 				.expect("Could not create surface");
+		oneoff_sender.send(window).expect("could not send window");
 
 		let (device, present_queue) = {
 			let (physical_device, queue_family_index) = instance
@@ -387,7 +432,7 @@ impl ExampleBase {
 		let device_memory_allocator = NaiveDeviceMemoryAllocator::new(device.clone());
 
 		let swapchain_create_info =
-			Self::swapchain_create_info(&surface, &present_queue, window_width, window_height);
+			Self::swapchain_create_info(&surface, &present_queue, window_size);
 		let surface_size: ImageSize = swapchain_create_info.image_info.image_size.into();
 		let (swapchain, present_images) = {
 			let s = Swapchain::new(
@@ -407,9 +452,9 @@ impl ExampleBase {
 		)
 		.expect("Could not create command pool");
 
-		let mut command_buffers = CommandBuffer::new(
+		let mut command_buffers = CommandBuffer::new_multiple(
 			command_pool.clone(),
-			vk::CommandBufferLevel::PRIMARY,
+			true,
 			std::num::NonZeroU32::new(2).unwrap()
 		)
 		.expect("Could not allocate command buffers");
@@ -492,7 +537,8 @@ impl ExampleBase {
 			.expect("Could not create semaphore");
 
 		ExampleBase {
-			event_loop: Some(event_loop),
+			input_receiver,
+
 			instance,
 			device,
 			present_queue,
@@ -507,16 +553,14 @@ impl ExampleBase {
 			depth_image_view,
 			present_complete_semaphore,
 			rendering_complete_semaphore,
-			window,
-			swapchain_outdated: false
+			swapchain_outdated: 0
 		}
 	}
 
 	pub fn swapchain_create_info(
 		surface: &vulkayes_core::surface::Surface,
 		queue: &Queue,
-		window_width: u32,
-		window_height: u32
+		window_size: [NonZeroU32; 2]
 	) -> SwapchainCreateInfo<[u32; 1]> {
 		let surface_format = surface
 			.physical_device_surface_formats(queue.device().physical_device())
@@ -533,10 +577,7 @@ impl ExampleBase {
 			a => (surface_capabilities.min_image_count + 1).min(a)
 		};
 		let surface_resolution = match surface_capabilities.current_extent.width {
-			std::u32::MAX => [
-				NonZeroU32::new(window_width).unwrap(),
-				NonZeroU32::new(window_height).unwrap()
-			],
+			std::u32::MAX => window_size,
 			_ => [
 				NonZeroU32::new(surface_capabilities.current_extent.width).unwrap(),
 				NonZeroU32::new(surface_capabilities.current_extent.height).unwrap()
@@ -550,12 +591,12 @@ impl ExampleBase {
 		} else {
 			surface_capabilities.current_transform
 		};
-		let present_mode = surface
-			.physical_device_surface_present_modes(queue.device().physical_device())
-			.unwrap()
-			.into_iter()
-			.find(|&mode| mode == vk::PresentModeKHR::MAILBOX)
-			.unwrap_or(vk::PresentModeKHR::FIFO);
+		let present_mode = sub_release! {
+			surface
+			.physical_device_surface_present_modes(queue.device().physical_device()).unwrap()
+			.into_iter().find(|&mode| mode == vk::PresentModeKHR::MAILBOX).unwrap_or(vk::PresentModeKHR::FIFO),
+			vk::PresentModeKHR::IMMEDIATE
+		};
 
 		SwapchainCreateInfo {
 			image_info: SwapchainCreateImageInfo {
