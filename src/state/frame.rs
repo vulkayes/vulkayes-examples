@@ -221,6 +221,10 @@ impl NextFrame<'_> {
 		&self.state.swapchain.present_views[self.present_index as usize]
 	}
 
+	pub fn framebuffer(&self) -> vk::Framebuffer {
+		self.state.swapchain.framebuffers[self.present_index as usize]
+	}
+
 	pub fn present_index(&self) -> u32 {
 		self.present_index
 	}

@@ -27,15 +27,15 @@ struct TriangleState {
 	#[allow(dead_code)] // keep alive
 	vertex_buffer: Vrc<Buffer>,
 
-	framebuffers: Vec<vk::Framebuffer>,
-	scissors: vk::Rect2D,
-	viewport: vk::Viewport,
-
 	render_pass: vk::RenderPass,
-
 	#[allow(dead_code)] // keep alive
 	pipeline_layout: Vrc<PipelineLayout>,
 	graphic_pipelines: Vec<vk::Pipeline>
+}
+impl examples::state::ChildExampleState for TriangleState {
+	fn render_pass(&self) -> vk::RenderPass {
+		self.render_pass
+	}
 }
 impl TriangleState {
 	fn create_render_pass(device: Vrc<Device>, format: vk::Format) -> vk::RenderPass {
@@ -92,41 +92,6 @@ impl TriangleState {
 		};
 
 		render_pass
-	}
-
-	fn create_framebuffers<'a>(
-		renderpass: vk::RenderPass,
-		present_image_views: impl Iterator<Item = &'a Vrc<ImageView>>,
-		depth_image_view: &Vrc<ImageView>
-	) -> Vec<vk::Framebuffer> {
-		let framebuffers: Vec<vk::Framebuffer> = present_image_views
-			.map(|present_image_view| {
-				let framebuffer_attachments = [
-					*present_image_view.deref().deref(),
-					*depth_image_view.deref().deref()
-				];
-				let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
-					.render_pass(renderpass)
-					.attachments(&framebuffer_attachments)
-					.width(present_image_view.subresource_image_size().width().get())
-					.height(present_image_view.subresource_image_size().height().get())
-					.layers(1);
-
-				vulkayes_core::log::debug!(
-					"Creating framebuffers for {:#?}",
-					framebuffer_attachments
-				);
-				unsafe {
-					present_image_view
-						.image()
-						.device()
-						.create_framebuffer(&frame_buffer_create_info, None)
-						.unwrap()
-				}
-			})
-			.collect();
-
-		framebuffers
 	}
 
 	fn create_buffers(
@@ -373,12 +338,6 @@ impl TriangleState {
 			state.swapchain.present_views[0].format()
 		);
 
-		let framebuffers = Self::create_framebuffers(
-			render_pass,
-			state.swapchain.present_views.iter(),
-			&state.depth_image_view
-		);
-
 		let (index_buffer, vertex_buffer) =
 			Self::create_buffers(&state.base.present_queue, &state.device_memory_allocator);
 
@@ -392,27 +351,11 @@ impl TriangleState {
 			Default::default()
 		)
 		.expect("could not create pipeline layout");
-		let scissors = vk::Rect2D {
-			offset: vk::Offset2D { x: 0, y: 0 },
-			extent: vk::Extent2D {
-				width: state.surface_size[0].get(),
-				height: state.surface_size[1].get()
-			}
-		};
-		let viewport = vk::Viewport {
-			x: 0.0,
-			y: 0.0,
-			width: state.surface_size[0].get() as f32,
-			height: state.surface_size[1].get() as f32,
-			min_depth: 0.0,
-			max_depth: 1.0
-		};
-
 		let graphic_pipelines = Self::create_pipeline(
 			vertex_shader_module,
 			fragment_shader_module,
-			scissors,
-			viewport,
+			state.swapchain.scissors,
+			state.swapchain.viewport,
 			&pipeline_layout,
 			render_pass
 		);
@@ -423,10 +366,6 @@ impl TriangleState {
 
 			index_buffer,
 			vertex_buffer,
-
-			framebuffers,
-			scissors,
-			viewport,
 
 			render_pass,
 
@@ -448,30 +387,6 @@ fn main() {
 		|state, me| {
 			let next_frame = state.acquire_next_frame();
 
-			if next_frame.state().swapchain_recreated() {
-				me.scissors = vk::Rect2D {
-					offset: vk::Offset2D { x: 0, y: 0 },
-					extent: vk::Extent2D {
-						width: next_frame.state().surface_size[0].get(),
-						height: next_frame.state().surface_size[1].get()
-					}
-				};
-				me.viewport = vk::Viewport {
-					x: 0.0,
-					y: 0.0,
-					width: next_frame.state().surface_size[0].get() as f32,
-					height: next_frame.state().surface_size[1].get() as f32,
-					min_depth: 0.0,
-					max_depth: 1.0
-				};
-
-				me.framebuffers = TriangleState::create_framebuffers(
-					me.render_pass,
-					next_frame.state().swapchain.present_views.iter(),
-					&next_frame.state().depth_image_view
-				);
-			}
-
 			let clear_values = [
 				vk::ClearValue {
 					color: vk::ClearColorValue {
@@ -488,8 +403,8 @@ fn main() {
 
 			let render_pass_begin_info = vk::RenderPassBeginInfo::builder()
 				.render_pass(me.render_pass)
-				.framebuffer(me.framebuffers[next_frame.present_index() as usize])
-				.render_area(me.scissors) // technically the same thing
+				.framebuffer(next_frame.framebuffer())
+				.render_area(next_frame.state().swapchain.scissors) // technically the same thing
 				.clear_values(&clear_values);
 
 			unsafe {
@@ -506,8 +421,8 @@ fn main() {
 					vk::PipelineBindPoint::GRAPHICS,
 					me.graphic_pipelines[0]
 				);
-				device.cmd_set_viewport(*cb_lock, 0, &[me.viewport]);
-				device.cmd_set_scissor(*cb_lock, 0, &[me.scissors]);
+				device.cmd_set_viewport(*cb_lock, 0, &[next_frame.state().swapchain.viewport]);
+				device.cmd_set_scissor(*cb_lock, 0, &[next_frame.state().swapchain.scissors]);
 
 				device.cmd_bind_vertex_buffers(
 					*cb_lock,
@@ -552,10 +467,6 @@ fn main() {
 					.base
 					.device
 					.destroy_shader_module(me.fragment_shader_module, None);
-
-				for framebuffer in me.framebuffers {
-					state.base.device.destroy_framebuffer(framebuffer, None);
-				}
 
 				state.base.device.destroy_render_pass(me.render_pass, None);
 

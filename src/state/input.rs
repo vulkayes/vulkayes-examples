@@ -91,13 +91,10 @@ impl super::ApplicationState {
 				Event::WindowEvent {
 					event: WindowEvent::Resized(size),
 					..
-				} => {
-					eprintln!("new window size {:?}", size);
-					match (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
-						(Some(w), Some(h)) => Some(InputEvent::WindowSize([w, h])),
-						_ => None
-					}
-				}
+				} => match (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
+					(Some(w), Some(h)) => Some(InputEvent::WindowSize([w, h])),
+					_ => None
+				},
 				_ => None
 			};
 

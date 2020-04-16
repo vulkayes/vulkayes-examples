@@ -359,7 +359,7 @@ impl ExampleBase {
 				..Default::default()
 			},
 			layers,
-			vulkayes_window::winit::required_surface_extensions()
+			vulkayes_window::required_surface_extensions()
 				.as_ref()
 				.iter()
 				.map(|&s| s)

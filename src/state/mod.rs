@@ -26,23 +26,42 @@ use vulkayes_core::swapchain::SwapchainCreateInfo;
 // Controls whether `NextFrame::submit_present` waits for the queue operations to finish. Useful for benchmarks.
 pub const WAIT_AFTER_FRAME: bool = true;
 
+pub trait ChildExampleState {
+	fn render_pass(&self) -> vk::RenderPass;
+}
+
 #[derive(Debug)]
 pub struct BaseState {
 	pub instance: Vrc<Instance>,
 	pub device: Vrc<Device>,
 	pub present_queue: Vrc<Queue>
 }
-
 #[derive(Debug)]
 pub struct SwapchainState {
 	pub create_info: SwapchainCreateInfo<[u32; 1]>,
 	pub swapchain: Vrc<Swapchain>,
 	pub present_views: Vec<Vrc<ImageView>>,
 
+	render_pass: Option<vk::RenderPass>,
+	pub framebuffers: Vec<vk::Framebuffer>,
+
+	pub scissors: vk::Rect2D,
+	pub viewport: vk::Viewport,
+
 	outdated: u8,
 	was_recreated: bool
 }
-
+impl Drop for SwapchainState {
+	fn drop(&mut self) {
+		unsafe {
+			for framebuffer in self.framebuffers.drain(..) {
+				self.swapchain
+					.device()
+					.destroy_framebuffer(framebuffer, None);
+			}
+		}
+	}
+}
 pub struct ApplicationState {
 	pub base: BaseState,
 	pub device_memory_allocator: NaiveDeviceMemoryAllocator,
@@ -138,6 +157,41 @@ impl ApplicationState {
 		depth_image_view
 	}
 
+	fn create_framebuffers<'a>(
+		renderpass: vk::RenderPass,
+		present_image_views: impl Iterator<Item = &'a Vrc<ImageView>>,
+		depth_image_view: &Vrc<ImageView>
+	) -> Vec<vk::Framebuffer> {
+		let framebuffers: Vec<vk::Framebuffer> = present_image_views
+			.map(|present_image_view| {
+				let framebuffer_attachments = [
+					*present_image_view.deref().deref(),
+					*depth_image_view.deref().deref()
+				];
+				let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
+					.render_pass(renderpass)
+					.attachments(&framebuffer_attachments)
+					.width(present_image_view.subresource_image_size().width().get())
+					.height(present_image_view.subresource_image_size().height().get())
+					.layers(1);
+
+				vulkayes_core::log::debug!(
+					"Creating framebuffers for {:#?}",
+					framebuffer_attachments
+				);
+				unsafe {
+					present_image_view
+						.image()
+						.device()
+						.create_framebuffer(&frame_buffer_create_info, None)
+						.unwrap()
+				}
+			})
+			.collect();
+
+		framebuffers
+	}
+
 	/// Checks `self.swapchain.outdated` and attempts to recreate the swapchain.
 	fn check_and_recreate_swapchain(&mut self) {
 		self.swapchain.was_recreated = false;
@@ -169,6 +223,28 @@ impl ApplicationState {
 						&self.device_memory_allocator,
 						&mut self.command
 					);
+
+					self.swapchain.scissors = vk::Rect2D {
+						offset: vk::Offset2D { x: 0, y: 0 },
+						extent: vk::Extent2D {
+							width: self.surface_size[0].get(),
+							height: self.surface_size[1].get()
+						}
+					};
+					self.swapchain.viewport = vk::Viewport {
+						x: 0.0,
+						y: 0.0,
+						width: self.surface_size[0].get() as f32,
+						height: self.surface_size[1].get() as f32,
+						min_depth: 0.0,
+						max_depth: 1.0
+					};
+					self.swapchain.framebuffers = Self::create_framebuffers(
+						self.swapchain.render_pass.unwrap(),
+						self.swapchain.present_views.iter(),
+						&self.depth_image_view
+					);
+
 					self.swapchain.outdated = 0;
 					self.swapchain.was_recreated = true;
 				}
@@ -176,7 +252,16 @@ impl ApplicationState {
 		}
 	}
 
-	pub fn new_input_thread<T>(
+	fn after_setup<T: ChildExampleState>(&mut self, child: &mut T) {
+		self.swapchain.render_pass = Some(child.render_pass());
+		self.swapchain.framebuffers = Self::create_framebuffers(
+			self.swapchain.render_pass.unwrap(),
+			self.swapchain.present_views.iter(),
+			&self.depth_image_view
+		);
+	}
+
+	pub fn new_input_thread<T: ChildExampleState>(
 		window_size: [NonZeroU32; 2],
 		setup_fn: impl FnOnce(&mut Self) -> T + Send + 'static,
 		mut render_loop_fn: impl FnMut(&mut Self, &mut T) + Send + 'static,
@@ -185,10 +270,10 @@ impl ApplicationState {
 		Self::new_input_thread_inner(window_size, move |window, input_receiver, oneoff_sender| {
 			let before = Instant::now();
 			let mut me = Self::new(window, input_receiver, oneoff_sender);
-
 			let mut t = setup_fn(&mut me);
+			me.after_setup(&mut t);
 			let after = Instant::now().duration_since(before);
-			println!("SETUP: {:?}", after);
+			println!("SETUP: {}", after.as_nanos());
 
 			unsafe {
 				dirty_mark::init();
@@ -220,15 +305,15 @@ impl ApplicationState {
 				log::trace!("Draw frame after\n");
 			}
 			let after = Instant::now().duration_since(before);
-			println!("RENDER_LOOP: {:?}", after);
 			unsafe {
 				dirty_mark::flush();
 			}
+			println!("RENDER_LOOP: {}", after.as_nanos());
 
 			let before = Instant::now();
 			cleanup_fn(&mut me, t);
 			let after = Instant::now().duration_since(before);
-			println!("CLEANUP: {:?}", after);
+			println!("CLEANUP: {}", after.as_nanos());
 		})
 	}
 
@@ -243,7 +328,7 @@ impl ApplicationState {
 		];
 
 		let (base, surface) = Self::setup_base(
-			vulkayes_window::winit::required_surface_extensions()
+			vulkayes_window::required_surface_extensions()
 				.as_ref()
 				.iter()
 				.copied(),

@@ -189,11 +189,34 @@ impl super::ApplicationState {
 		.expect("could not create swapchain");
 
 		let present_views = Self::create_present_views(swapchain_data.images);
+		let framebuffers = Vec::with_capacity(present_views.len());
+
+		let scissors = vk::Rect2D {
+			offset: vk::Offset2D { x: 0, y: 0 },
+			extent: vk::Extent2D {
+				width: size[0].get(),
+				height: size[1].get()
+			}
+		};
+		let viewport = vk::Viewport {
+			x: 0.0,
+			y: 0.0,
+			width: size[0].get() as f32,
+			height: size[1].get() as f32,
+			min_depth: 0.0,
+			max_depth: 1.0
+		};
 
 		SwapchainState {
 			create_info,
 			swapchain: swapchain_data.swapchain,
 			present_views,
+
+			render_pass: None,
+			framebuffers,
+
+			scissors,
+			viewport,
 
 			outdated: 0,
 			was_recreated: false
