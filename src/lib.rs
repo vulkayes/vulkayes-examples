@@ -359,13 +359,11 @@ impl ExampleBase {
 				..Default::default()
 			},
 			layers,
-			vulkayes_window::required_surface_extensions()
-				.as_ref()
-				.iter()
-				.map(|&s| s)
-				.chain(std::iter::once(
+			vulkayes_window::winit::required_surface_extensions(&window).as_ref().iter().map(|&s| s).chain(
+				std::iter::once(
 					ash::extensions::ext::DebugReport::name().to_str().unwrap()
-				)),
+				)
+			),
 			Default::default(),
 			vulkayes_core::instance::debug::DebugCallback::Default()
 		)

@@ -25,7 +25,7 @@ rpath = false
 image = "0.10.4"
 
 #vulkayes-core = { path = "../vulkayes-core", features = ["single_thread"] }
-vulkayes-window = { path = "../vulkayes-window", features = ["winit"] }
+vulkayes-window = { path = "../vulkayes-window", features = ["winit", "unix_use_xcb_default"] }
 
 edwardium_logger = "1.1"
 
