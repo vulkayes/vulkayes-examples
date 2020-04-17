@@ -1,6 +1,6 @@
 use std::{default::Default, num::NonZeroU32, ops::Deref, sync::mpsc};
 
-use winit::window::Window;
+// use winit::window::Window;
 
 use ash::{version::DeviceV1_0, vk};
 
@@ -23,8 +23,12 @@ use vulkayes_core::{
 	util::fmt::VkVersion,
 	Vrc
 };
-use vulkayes_window::winit::winit;
-use winit::event_loop::EventLoop;
+
+// use vulkayes_window::winit::winit;
+// use winit::event_loop::EventLoop;
+
+use minifb::Window;
+use vulkayes_window::minifb::minifb;
 
 #[macro_use]
 pub mod dirty_mark;
@@ -185,7 +189,7 @@ impl ExampleBase {
 	pub fn with_input_thread(
 		window_size: [NonZeroU32; 2],
 		new_thread_fn: impl FnOnce(Self) + Send + 'static
-	) -> ! {
+	) {
 		// Register a logger since Vulkayes logs through the log crate
 		let logger = edwardium_logger::Logger::new(
 			[edwardium_logger::targets::stderr::StderrTarget::new(
@@ -195,50 +199,74 @@ impl ExampleBase {
 		);
 		logger.init_boxed().expect("Could not initialize logger");
 
-		let event_loop = EventLoop::new();
-		let window = winit::window::WindowBuilder::new()
-			.with_title("Ash - Example")
-			.with_inner_size(winit::dpi::LogicalSize::new(
-				f64::from(window_size[0].get()),
-				f64::from(window_size[1].get())
-			))
-			.build(&event_loop)
-			.expect("could not create window");
+		// let event_loop = EventLoop::new();
+		// let window = winit::window::WindowBuilder::new()
+		// 	.with_title("Ash - Example")
+		// 	.with_inner_size(winit::dpi::LogicalSize::new(
+		// 		f64::from(window_size[0].get()),
+		// 		f64::from(window_size[1].get())
+		// 	))
+		// 	.build(&event_loop)
+		// 	.expect("could not create window");
+		let mut window = Window::new(
+			"Ash - Example",
+			window_size[0].get() as usize,
+			window_size[1].get() as usize,
+			Default::default()
+		)
+		.expect("could not create window");
+		window.update();
+
+		struct Windowino(Window);
+		unsafe impl Send for Windowino {};
+		unsafe impl Sync for Windowino {};
+		let send_me = Windowino(window);
 
 		// A little something about macOS and winit
 		// On macOS, both the even loop and the window must stay in the main thread while rendering.
 		// However, the window is needed to create surface, which needs an instance, which means it needs to happen in the renderer thread.
 		// Here we have to move the window into the new thread and then send it back using a channel.
-		let (oneoff_sender, oneoff_receiver) = mpsc::channel::<Window>();
+		let (oneoff_sender, oneoff_receiver) = mpsc::channel::<Windowino>();
 
 		let (input_sender, input_receiver) = mpsc::channel::<InputEvent>();
 		std::thread::spawn(move || {
-			let base = Self::new(window_size, window, input_receiver, oneoff_sender);
+			let w = send_me;
+			let window = w.0;
 
-			new_thread_fn(base)
+			let base = Self::new(window_size, &window, input_receiver);
+
+			let send_me = Windowino(window);
+			oneoff_sender.send(send_me).expect("could not send window");
+
+			new_thread_fn(base);
 		});
 
 		// We don't actually need the window after, but it has to be in this thread. Weird.
-		let _window = oneoff_receiver
+		let mut window = oneoff_receiver
 			.recv()
-			.expect("could not receive window back");
+			.expect("could not receive window back")
+			.0;
 
 		// Technically result is now `!`, but this can be trivially replaced by `run_return` where supported
-		event_loop.run(move |event, _target, control_flow| {
-			// Handle window close event
-			match event {
-				winit::event::Event::WindowEvent {
-					event: winit::event::WindowEvent::CloseRequested,
-					..
-				} => {
-					input_sender
-						.send(InputEvent::Exit)
-						.expect("could not send input event");
-					*control_flow = winit::event_loop::ControlFlow::Exit;
-				}
-				_ => ()
-			}
-		})
+		// event_loop.run(move |event, _target, control_flow| {
+		// 	// Handle window close event
+		// 	match event {
+		// 		winit::event::Event::WindowEvent {
+		// 			event: winit::event::WindowEvent::CloseRequested,
+		// 			..
+		// 		} => {
+		// 			input_sender
+		// 				.send(InputEvent::Exit)
+		// 				.expect("could not send input event");
+		// 			*control_flow = winit::event_loop::ControlFlow::Exit;
+		// 		}
+		// 		_ => ()
+		// 	}
+		// })
+
+		while window.is_open() {
+			window.update();
+		}
 	}
 
 	fn draw(&mut self, f: &impl Fn(&mut Self, u32)) {
@@ -335,9 +363,8 @@ impl ExampleBase {
 
 	fn new(
 		window_size: [NonZeroU32; 2],
-		window: Window,
-		input_receiver: mpsc::Receiver<InputEvent>,
-		oneoff_sender: mpsc::Sender<Window>
+		window: &Window,
+		input_receiver: mpsc::Receiver<InputEvent>
 	) -> Self {
 		// Create Entry, which is the entry point into the Vulkan API.
 		// The default entry is loaded as a dynamic library.
@@ -359,11 +386,13 @@ impl ExampleBase {
 				..Default::default()
 			},
 			layers,
-			vulkayes_window::winit::required_surface_extensions(&window).as_ref().iter().map(|&s| s).chain(
-				std::iter::once(
+			vulkayes_window::minifb::required_extensions(&window)
+				.as_ref()
+				.iter()
+				.map(|&s| s)
+				.chain(std::iter::once(
 					ash::extensions::ext::DebugReport::name().to_str().unwrap()
-				)
-			),
+				)),
 			Default::default(),
 			vulkayes_core::instance::debug::DebugCallback::Default()
 		)
@@ -371,9 +400,8 @@ impl ExampleBase {
 
 		// Create a surface using the vulkayes_window::winit feature
 		let surface =
-			vulkayes_window::winit::create_surface(instance.clone(), &window, Default::default())
+			vulkayes_window::minifb::create_surface(instance.clone(), &window, Default::default())
 				.expect("Could not create surface");
-		oneoff_sender.send(window).expect("could not send window");
 
 		let (device, present_queue) = {
 			let (physical_device, queue_family_index) = instance

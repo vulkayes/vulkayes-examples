@@ -25,14 +25,6 @@ rpath = false
 image = "0.10.4"
 
 #vulkayes-core = { path = "../vulkayes-core", features = ["single_thread"] }
-vulkayes-window = { path = "../vulkayes-window", features = ["winit", "unix_use_xcb_default"] }
+vulkayes-window = { path = "../vulkayes-window", features = ["winit_window", "unix_use_xcb_default", "minifb_window"] }
 
 edwardium_logger = "1.1"
-
-[target.'cfg(windows)'.dependencies]
-winapi = { version = "0.3.4", features = ["windef", "winuser"] }
-
-[target.'cfg(target_os = "macos")'.dependencies]
-metal = "0.17.1"
-cocoa = "0.20.0"
-objc = "0.2.7"

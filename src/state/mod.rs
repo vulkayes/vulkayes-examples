@@ -328,7 +328,10 @@ impl ApplicationState {
 		];
 
 		let (base, surface) = Self::setup_base(
-			vulkayes_window::winit::required_surface_extensions(&window).as_ref().iter().copied(),
+			vulkayes_window::winit::required_extensions(&window)
+				.as_ref()
+				.iter()
+				.copied(),
 			|instance| {
 				let surface =
 					vulkayes_window::winit::create_surface(instance, &window, Default::default())
