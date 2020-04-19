@@ -24,7 +24,7 @@ impl super::ApplicationState {
 		// Create instance from loaded entry
 		// Also enable validation layers and require surface extensions as defined in vulkayes_window
 		let layers = sub_release! {
-			["VK_LAYER_LUNARG_standard_validation"].iter().map(|&s| s),
+			["VK_LAYER_KHRONOS_validation"].iter().map(|&s| s),
 			std::iter::empty()
 		};
 

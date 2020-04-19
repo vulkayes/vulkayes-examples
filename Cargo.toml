@@ -5,11 +5,6 @@ version = "0.1.0"
 authors = ["TheEdward162 <TheEdward162@gmail.com>", "maik klein <maikklein@googlemail.com>"]
 edition = "2018"
 
-[dependencies.vulkayes-core]
-path = "../vulkayes-core"
-default-features = false
-features = ["single_thread", "naive_device_allocator", "rust_host_allocator", "log_max_level_info"]
-
 [profile.release]
 opt-level = 3
 debug = false
@@ -24,7 +19,7 @@ rpath = false
 [dependencies]
 image = "0.10.4"
 
-#vulkayes-core = { path = "../vulkayes-core", features = ["single_thread"] }
-vulkayes-window = { path = "../vulkayes-window", features = ["winit_window", "unix_use_xcb_default", "minifb_window"] }
+vulkayes-core = { path = "../vulkayes-core", default-features = false, features = ["rust_host_allocator", "log_max_level_info"] }
+vulkayes-window = { path = "../vulkayes-window", features = ["winit_window", "unix_use_xcb_default"] }
 
 edwardium_logger = "1.1"
