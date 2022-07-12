@@ -1,13 +1,12 @@
 use std::{default::Default, ffi::CString, io::Cursor, mem, num::NonZeroU32, ops::Deref};
 
-use vulkayes_core::ash::{util::*, version::DeviceV1_0, vk};
-
 use examples::state::ApplicationState;
 use vulkayes_core::{
+	ash::{util::*, vk},
 	memory::device::{naive::NaiveDeviceMemoryAllocator, MappingAccessResult},
 	pipeline::layout::PipelineLayout,
 	prelude::*,
-	resource::buffer
+	resource::buffer::params::BufferAllocatorParams
 };
 
 vulkayes_core::offsetable_struct! {
@@ -57,19 +56,12 @@ impl TriangleState {
 				..Default::default()
 			}
 		];
-		let color_attachment_refs = [vk::AttachmentReference {
-			attachment: 0,
-			layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-		}];
-		let depth_attachment_ref = vk::AttachmentReference {
-			attachment: 1,
-			layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-		};
+		let color_attachment_refs = [vk::AttachmentReference { attachment: 0, layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL }];
+		let depth_attachment_ref = vk::AttachmentReference { attachment: 1, layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 		let dependencies = [vk::SubpassDependency {
 			src_subpass: vk::SUBPASS_EXTERNAL,
 			src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-			dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ
-				| vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+			dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
 			dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
 			..Default::default()
 		}];
@@ -94,23 +86,18 @@ impl TriangleState {
 		render_pass
 	}
 
-	fn create_buffers(
-		present_queue: &Queue,
-		device_memory_allocator: &NaiveDeviceMemoryAllocator
-	) -> (Vrc<Buffer>, Vrc<Buffer>) {
+	fn create_buffers(present_queue: &Queue, device_memory_allocator: &NaiveDeviceMemoryAllocator) -> (Vrc<Buffer>, Vrc<Buffer>) {
 		let index_buffer = {
 			let index_buffer_data = [0u32, 1, 2];
 
 			let buffer = Buffer::new(
 				present_queue.device().clone(),
-				std::num::NonZeroU64::new(std::mem::size_of_val(&index_buffer_data) as u64)
-					.unwrap(),
+				std::num::NonZeroU64::new(std::mem::size_of_val(&index_buffer_data) as u64).unwrap(),
 				vk::BufferUsageFlags::INDEX_BUFFER,
 				present_queue.into(),
-				buffer::params::AllocatorParams::Some {
+				BufferAllocatorParams::Some {
 					allocator: device_memory_allocator,
-					requirements: vk::MemoryPropertyFlags::HOST_VISIBLE
-						| vk::MemoryPropertyFlags::HOST_COHERENT
+					requirements: vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
 				},
 				Default::default()
 			)
@@ -119,7 +106,11 @@ impl TriangleState {
 			let memory = buffer.memory().unwrap();
 			memory
 				.map_memory_with(|mut access| {
-					access.write_slice(&index_buffer_data, 0, Default::default());
+					access.write_slice(
+						&index_buffer_data,
+						0,
+						Default::default()
+					);
 					MappingAccessResult::Unmap
 				})
 				.expect("could not map memory");
@@ -133,28 +124,18 @@ impl TriangleState {
 				std::num::NonZeroU64::new(3 * std::mem::size_of::<Vertex>() as u64).unwrap(),
 				vk::BufferUsageFlags::VERTEX_BUFFER,
 				present_queue.into(),
-				buffer::params::AllocatorParams::Some {
+				BufferAllocatorParams::Some {
 					allocator: device_memory_allocator,
-					requirements: vk::MemoryPropertyFlags::HOST_VISIBLE
-						| vk::MemoryPropertyFlags::HOST_COHERENT
+					requirements: vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
 				},
 				Default::default()
 			)
 			.expect("Could not create index buffer");
 
 			let vertices = [
-				Vertex {
-					pos: [-1.0, 1.0, 0.0, 1.0],
-					color: [0.0, 1.0, 0.0, 1.0]
-				},
-				Vertex {
-					pos: [1.0, 1.0, 0.0, 1.0],
-					color: [0.0, 0.0, 1.0, 1.0]
-				},
-				Vertex {
-					pos: [0.0, -1.0, 0.0, 1.0],
-					color: [1.0, 0.0, 0.0, 1.0]
-				}
+				Vertex { pos: [-1.0, 1.0, 0.0, 1.0], color: [0.0, 1.0, 0.0, 1.0] },
+				Vertex { pos: [1.0, 1.0, 0.0, 1.0], color: [0.0, 0.0, 1.0, 1.0] },
+				Vertex { pos: [0.0, -1.0, 0.0, 1.0], color: [1.0, 0.0, 0.0, 1.0] }
 			];
 
 			let memory = buffer.memory().unwrap();
@@ -172,16 +153,13 @@ impl TriangleState {
 	}
 
 	fn create_shaders(device: &Device) -> (vk::ShaderModule, vk::ShaderModule) {
-		let mut vertex_spv_file =
-			Cursor::new(&include_bytes!("../../shader/triangle/vert.spv")[..]);
+		let mut vertex_spv_file = Cursor::new(&include_bytes!("../../shader/triangle/vert.spv")[..]);
 		let mut frag_spv_file = Cursor::new(&include_bytes!("../../shader/triangle/frag.spv")[..]);
 
-		let vertex_code =
-			read_spv(&mut vertex_spv_file).expect("Failed to read vertex shader spv file");
+		let vertex_code = read_spv(&mut vertex_spv_file).expect("Failed to read vertex shader spv file");
 		let vertex_shader_info = vk::ShaderModuleCreateInfo::builder().code(&vertex_code);
 
-		let frag_code =
-			read_spv(&mut frag_spv_file).expect("Failed to read fragment shader spv file");
+		let frag_code = read_spv(&mut frag_spv_file).expect("Failed to read fragment shader spv file");
 		let frag_shader_info = vk::ShaderModuleCreateInfo::builder().code(&frag_code);
 
 		let vertex_shader_module = unsafe {
@@ -196,7 +174,10 @@ impl TriangleState {
 				.expect("Fragment shader module error")
 		};
 
-		(vertex_shader_module, fragment_shader_module)
+		(
+			vertex_shader_module,
+			fragment_shader_module
+		)
 	}
 
 	fn create_pipeline(
@@ -223,11 +204,8 @@ impl TriangleState {
 				..Default::default()
 			}
 		];
-		let vertex_input_binding_descriptions = [vk::VertexInputBindingDescription {
-			binding: 0,
-			stride: mem::size_of::<Vertex>() as u32,
-			input_rate: vk::VertexInputRate::VERTEX
-		}];
+		let vertex_input_binding_descriptions =
+			[vk::VertexInputBindingDescription { binding: 0, stride: mem::size_of::<Vertex>() as u32, input_rate: vk::VertexInputRate::VERTEX }];
 		let vertex_input_attribute_descriptions = [
 			vk::VertexInputAttributeDescription {
 				location: 0,
@@ -250,10 +228,8 @@ impl TriangleState {
 			p_vertex_binding_descriptions: vertex_input_binding_descriptions.as_ptr(),
 			..Default::default()
 		};
-		let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
-			topology: vk::PrimitiveTopology::TRIANGLE_LIST,
-			..Default::default()
-		};
+		let vertex_input_assembly_state_info =
+			vk::PipelineInputAssemblyStateCreateInfo { topology: vk::PrimitiveTopology::TRIANGLE_LIST, ..Default::default() };
 
 		let scissors = [scissors];
 		let viewports = [viewport];
@@ -267,10 +243,8 @@ impl TriangleState {
 			polygon_mode: vk::PolygonMode::FILL,
 			..Default::default()
 		};
-		let multisample_state_info = vk::PipelineMultisampleStateCreateInfo {
-			rasterization_samples: vk::SampleCountFlags::TYPE_1,
-			..Default::default()
-		};
+		let multisample_state_info =
+			vk::PipelineMultisampleStateCreateInfo { rasterization_samples: vk::SampleCountFlags::TYPE_1, ..Default::default() };
 		let noop_stencil_state = vk::StencilOpState {
 			fail_op: vk::StencilOp::KEEP,
 			pass_op: vk::StencilOp::KEEP,
@@ -295,15 +269,14 @@ impl TriangleState {
 			src_alpha_blend_factor: vk::BlendFactor::ZERO,
 			dst_alpha_blend_factor: vk::BlendFactor::ZERO,
 			alpha_blend_op: vk::BlendOp::ADD,
-			color_write_mask: vk::ColorComponentFlags::all()
+			color_write_mask: vk::ColorComponentFlags::RGBA
 		}];
 		let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
 			.logic_op(vk::LogicOp::CLEAR)
 			.attachments(&color_blend_attachment_states);
 
 		let dynamic_state = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-		let dynamic_state_info =
-			vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dynamic_state);
+		let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dynamic_state);
 
 		let graphic_pipeline_info = vk::GraphicsPipelineCreateInfo::builder()
 			.stages(&shader_stage_create_infos)
@@ -338,16 +311,17 @@ impl TriangleState {
 			state.swapchain.present_views[0].format()
 		);
 
-		let (index_buffer, vertex_buffer) =
-			Self::create_buffers(&state.base.present_queue, &state.device_memory_allocator);
+		let (index_buffer, vertex_buffer) = Self::create_buffers(
+			&state.base.present_queue,
+			&state.device_memory_allocator
+		);
 
-		let (vertex_shader_module, fragment_shader_module) =
-			Self::create_shaders(&state.base.device);
+		let (vertex_shader_module, fragment_shader_module) = Self::create_shaders(&state.base.device);
 
 		let pipeline_layout = PipelineLayout::new(
 			state.base.device.clone(),
-			std::iter::empty(),
-			std::iter::empty(),
+			[],
+			[],
 			Default::default()
 		)
 		.expect("could not create pipeline layout");
@@ -360,45 +334,20 @@ impl TriangleState {
 			render_pass
 		);
 
-		TriangleState {
-			vertex_shader_module,
-			fragment_shader_module,
-
-			index_buffer,
-			vertex_buffer,
-
-			render_pass,
-
-			pipeline_layout,
-			graphic_pipelines
-		}
+		TriangleState { vertex_shader_module, fragment_shader_module, index_buffer, vertex_buffer, render_pass, pipeline_layout, graphic_pipelines }
 	}
 }
 
 fn main() {
 	examples::state::ApplicationState::new_input_thread(
-		unsafe {
-			[
-				NonZeroU32::new_unchecked(1200),
-				NonZeroU32::new_unchecked(675)
-			]
-		},
+		unsafe { [NonZeroU32::new_unchecked(1200), NonZeroU32::new_unchecked(675)] },
 		|state| TriangleState::new(state),
 		|state, me| {
 			let next_frame = state.acquire_next_frame();
 
 			let clear_values = [
-				vk::ClearValue {
-					color: vk::ClearColorValue {
-						float32: [0.0, 0.0, 0.0, 0.0]
-					}
-				},
-				vk::ClearValue {
-					depth_stencil: vk::ClearDepthStencilValue {
-						depth: 1.0,
-						stencil: 0
-					}
-				}
+				vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 0.0] } },
+				vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } }
 			];
 
 			let render_pass_begin_info = vk::RenderPassBeginInfo::builder()
@@ -421,8 +370,16 @@ fn main() {
 					vk::PipelineBindPoint::GRAPHICS,
 					me.graphic_pipelines[0]
 				);
-				device.cmd_set_viewport(*cb_lock, 0, &[next_frame.state().swapchain.viewport]);
-				device.cmd_set_scissor(*cb_lock, 0, &[next_frame.state().swapchain.scissors]);
+				device.cmd_set_viewport(
+					*cb_lock,
+					0,
+					&[next_frame.state().swapchain.viewport]
+				);
+				device.cmd_set_scissor(
+					*cb_lock,
+					0,
+					&[next_frame.state().swapchain.scissors]
+				);
 
 				device.cmd_bind_vertex_buffers(
 					*cb_lock,
@@ -445,7 +402,7 @@ fn main() {
 					1
 				);
 				// Or draw without the index buffer
-				// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
+				// device.cmd_draw(*cb_lock, 3, 1, 0, 0);
 
 				device.cmd_end_render_pass(*cb_lock);
 			}

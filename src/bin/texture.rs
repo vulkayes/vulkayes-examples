@@ -7,20 +7,19 @@ use std::{
 	ops::Deref
 };
 
+use examples::*;
 use vulkayes_core::{
-	ash::{util::*, version::DeviceV1_0, vk},
+	ash::{util::*, vk},
 	memory::device::MappingAccessResult,
 	resource::{
-		buffer::{self, Buffer},
+		buffer::{params::BufferAllocatorParams, Buffer},
 		image::{
-			params::{AllocatorParams, ImageSize, ImageViewRange, MipmapLevels},
+			params::{ImageAllocatorParams, ImageSize, ImageViewRange, MipmapLevels},
 			view::ImageView,
 			Image
 		}
 	}
 };
-
-use examples::*;
 
 vulkayes_core::offsetable_struct! {
 	#[derive(Copy, Clone, Debug)]
@@ -40,9 +39,7 @@ pub struct Vector3 {
 
 fn main() {
 	ExampleBase::with_input_thread(
-		[unsafe { NonZeroU32::new_unchecked(1200) }, unsafe {
-			NonZeroU32::new_unchecked(675)
-		}],
+		[unsafe { NonZeroU32::new_unchecked(1200) }, unsafe { NonZeroU32::new_unchecked(675) }],
 		|mut base| {
 			let (renderpass, framebuffers) = unsafe {
 				let renderpass_attachments = [
@@ -63,19 +60,12 @@ fn main() {
 						..Default::default()
 					}
 				];
-				let color_attachment_refs = [vk::AttachmentReference {
-					attachment: 0,
-					layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL
-				}];
-				let depth_attachment_ref = vk::AttachmentReference {
-					attachment: 1,
-					layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL
-				};
+				let color_attachment_refs = [vk::AttachmentReference { attachment: 0, layout: vk::ImageLayout::COLOR_ATTACHMENT_OPTIMAL }];
+				let depth_attachment_ref = vk::AttachmentReference { attachment: 1, layout: vk::ImageLayout::DEPTH_STENCIL_ATTACHMENT_OPTIMAL };
 				let dependencies = [vk::SubpassDependency {
 					src_subpass: vk::SUBPASS_EXTERNAL,
 					src_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
-					dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ
-						| vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
+					dst_access_mask: vk::AccessFlags::COLOR_ATTACHMENT_READ | vk::AccessFlags::COLOR_ATTACHMENT_WRITE,
 					dst_stage_mask: vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT,
 					..Default::default()
 				}];
@@ -100,10 +90,7 @@ fn main() {
 					.present_image_views
 					.iter()
 					.map(|present_image_view| {
-						let framebuffer_attachments = [
-							*present_image_view.deref().deref(),
-							*base.depth_image_view.deref().deref()
-						];
+						let framebuffer_attachments = [*present_image_view.deref().deref(), *base.depth_image_view.deref().deref()];
 						let frame_buffer_create_info = vk::FramebufferCreateInfo::builder()
 							.render_pass(renderpass)
 							.attachments(&framebuffer_attachments)
@@ -124,14 +111,12 @@ fn main() {
 			let index_buffer = {
 				let buffer = Buffer::new(
 					base.device.clone(),
-					std::num::NonZeroU64::new(std::mem::size_of_val(&index_buffer_data) as u64)
-						.unwrap(),
+					std::num::NonZeroU64::new(std::mem::size_of_val(&index_buffer_data) as u64).unwrap(),
 					vk::BufferUsageFlags::INDEX_BUFFER,
 					base.present_queue.deref().into(),
-					buffer::params::AllocatorParams::Some {
+					BufferAllocatorParams::Some {
 						allocator: &base.device_memory_allocator,
-						requirements: vk::MemoryPropertyFlags::HOST_VISIBLE
-							| vk::MemoryPropertyFlags::HOST_COHERENT
+						requirements: vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
 					},
 					Default::default()
 				)
@@ -140,7 +125,11 @@ fn main() {
 				let memory = buffer.memory().unwrap();
 				memory
 					.map_memory_with(|mut access| {
-						access.write_slice(&index_buffer_data, 0, Default::default());
+						access.write_slice(
+							&index_buffer_data,
+							0,
+							Default::default()
+						);
 						MappingAccessResult::Unmap
 					})
 					.expect("could not map memory");
@@ -149,22 +138,10 @@ fn main() {
 			};
 
 			let vertices = [
-				Vertex {
-					pos: [-1.0, -1.0, 0.0, 1.0],
-					uv: [0.0, 0.0]
-				},
-				Vertex {
-					pos: [-1.0, 1.0, 0.0, 1.0],
-					uv: [0.0, 1.0]
-				},
-				Vertex {
-					pos: [1.0, 1.0, 0.0, 1.0],
-					uv: [1.0, 1.0]
-				},
-				Vertex {
-					pos: [1.0, -1.0, 0.0, 1.0],
-					uv: [1.0, 0.0]
-				}
+				Vertex { pos: [-1.0, -1.0, 0.0, 1.0], uv: [0.0, 0.0] },
+				Vertex { pos: [-1.0, 1.0, 0.0, 1.0], uv: [0.0, 1.0] },
+				Vertex { pos: [1.0, 1.0, 0.0, 1.0], uv: [1.0, 1.0] },
+				Vertex { pos: [1.0, -1.0, 0.0, 1.0], uv: [1.0, 0.0] }
 			];
 			let vertex_buffer = {
 				let buffer = Buffer::new(
@@ -172,10 +149,9 @@ fn main() {
 					std::num::NonZeroU64::new(std::mem::size_of_val(&vertices) as u64).unwrap(),
 					vk::BufferUsageFlags::VERTEX_BUFFER,
 					base.present_queue.deref().into(),
-					buffer::params::AllocatorParams::Some {
+					BufferAllocatorParams::Some {
 						allocator: &base.device_memory_allocator,
-						requirements: vk::MemoryPropertyFlags::HOST_VISIBLE
-							| vk::MemoryPropertyFlags::HOST_COHERENT
+						requirements: vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
 					},
 					Default::default()
 				)
@@ -192,25 +168,16 @@ fn main() {
 				buffer
 			};
 
-			let uniform_color_buffer_data = Vector3 {
-				x: 1.0,
-				y: 1.0,
-				z: 1.0,
-				_pad: 0.0
-			};
+			let uniform_color_buffer_data = Vector3 { x: 1.0, y: 1.0, z: 1.0, _pad: 0.0 };
 			let uniform_color_buffer = {
 				let buffer = Buffer::new(
 					base.device.clone(),
-					std::num::NonZeroU64::new(
-						std::mem::size_of_val(&uniform_color_buffer_data) as u64
-					)
-					.unwrap(),
+					std::num::NonZeroU64::new(std::mem::size_of_val(&uniform_color_buffer_data) as u64).unwrap(),
 					vk::BufferUsageFlags::UNIFORM_BUFFER,
 					base.present_queue.deref().into(),
-					buffer::params::AllocatorParams::Some {
+					BufferAllocatorParams::Some {
 						allocator: &base.device_memory_allocator,
-						requirements: vk::MemoryPropertyFlags::HOST_VISIBLE
-							| vk::MemoryPropertyFlags::HOST_COHERENT
+						requirements: vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
 					},
 					Default::default()
 				)
@@ -219,7 +186,11 @@ fn main() {
 				let memory = buffer.memory().unwrap();
 				memory
 					.map_memory_with(|mut access| {
-						access.write_slice(&[uniform_color_buffer_data], 0, Default::default());
+						access.write_slice(
+							&[uniform_color_buffer_data],
+							0,
+							Default::default()
+						);
 						MappingAccessResult::Unmap
 					})
 					.expect("could not map memory");
@@ -229,22 +200,18 @@ fn main() {
 
 			let image = image::load_from_memory(include_bytes!("../../assets/rust.png"))
 				.unwrap()
-				.to_rgba();
+				.to_rgba8();
 			let image_dimensions = image.dimensions();
 			let image_data = image.into_raw();
 			let image_buffer = {
 				let buffer = Buffer::new(
 					base.device.clone(),
-					std::num::NonZeroU64::new(
-						(std::mem::size_of::<u8>() * image_data.len()) as u64
-					)
-					.unwrap(),
+					std::num::NonZeroU64::new((std::mem::size_of::<u8>() * image_data.len()) as u64).unwrap(),
 					vk::BufferUsageFlags::TRANSFER_SRC,
 					base.present_queue.deref().into(),
-					buffer::params::AllocatorParams::Some {
+					BufferAllocatorParams::Some {
 						allocator: &base.device_memory_allocator,
-						requirements: vk::MemoryPropertyFlags::HOST_VISIBLE
-							| vk::MemoryPropertyFlags::HOST_COHERENT
+						requirements: vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT
 					},
 					Default::default()
 				)
@@ -268,24 +235,21 @@ fn main() {
 					ImageSize::from(ImageSize::new_2d(
 						NonZeroU32::new(image_dimensions.0).unwrap(),
 						NonZeroU32::new(image_dimensions.1).unwrap(),
-						vulkayes_core::NONZEROU32_ONE,
+						NonZeroU32::new(1).unwrap(),
 						MipmapLevels::One()
 					))
 					.into(),
 					Default::default(),
 					vk::ImageUsageFlags::TRANSFER_DST | vk::ImageUsageFlags::SAMPLED,
 					base.present_queue.deref().into(),
-					AllocatorParams::Some {
-						allocator: &base.device_memory_allocator,
-						requirements: vk::MemoryPropertyFlags::DEVICE_LOCAL
-					},
+					ImageAllocatorParams::Some { allocator: &base.device_memory_allocator, requirements: vk::MemoryPropertyFlags::DEVICE_LOCAL },
 					Default::default()
 				)
 				.expect("Could not create texture image");
 
 				ImageView::new(
 					texture_image.into(),
-					ImageViewRange::Type2D(0, vulkayes_core::NONZEROU32_ONE, 0),
+					ImageViewRange::Type2D(0, NonZeroU32::new(1).unwrap(), 0),
 					None,
 					Default::default(),
 					vk::ImageAspectFlags::COLOR,
@@ -294,82 +258,84 @@ fn main() {
 				.expect("Chould not create texture image view")
 			};
 
-			record_command_buffer(&base.setup_command_buffer, |command_buffer| {
-				let device = command_buffer.pool().device();
-				let cb_lock = command_buffer.lock().expect("vutex poisoned");
+			record_command_buffer(
+				&base.setup_command_buffer,
+				|command_buffer| {
+					let device = command_buffer.pool().device();
+					let cb_lock = command_buffer.lock().expect("vutex poisoned");
 
-				let texture_barrier = vk::ImageMemoryBarrier {
-					dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-					new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-					image: *texture_image_view.image().deref().deref(),
-					subresource_range: vk::ImageSubresourceRange {
-						aspect_mask: vk::ImageAspectFlags::COLOR,
-						level_count: 1,
-						layer_count: 1,
+					let texture_barrier = vk::ImageMemoryBarrier {
+						dst_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+						new_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+						image: *texture_image_view.image().deref().deref(),
+						subresource_range: vk::ImageSubresourceRange {
+							aspect_mask: vk::ImageAspectFlags::COLOR,
+							level_count: 1,
+							layer_count: 1,
+							..Default::default()
+						},
 						..Default::default()
-					},
-					..Default::default()
-				};
-				unsafe {
-					device.cmd_pipeline_barrier(
-						*cb_lock,
-						vk::PipelineStageFlags::BOTTOM_OF_PIPE,
-						vk::PipelineStageFlags::TRANSFER,
-						vk::DependencyFlags::empty(),
-						&[],
-						&[],
-						&[texture_barrier]
-					);
-				}
-				let buffer_copy_regions = vk::BufferImageCopy::builder()
-					.image_subresource(
-						vk::ImageSubresourceLayers::builder()
-							.aspect_mask(vk::ImageAspectFlags::COLOR)
-							.layer_count(1)
-							.build()
-					)
-					.image_extent(vk::Extent3D {
-						width: image_dimensions.0,
-						height: image_dimensions.1,
-						depth: 1
-					});
+					};
+					unsafe {
+						device.cmd_pipeline_barrier(
+							*cb_lock,
+							vk::PipelineStageFlags::BOTTOM_OF_PIPE,
+							vk::PipelineStageFlags::TRANSFER,
+							vk::DependencyFlags::empty(),
+							&[],
+							&[],
+							&[texture_barrier]
+						);
+					}
+					let buffer_copy_regions = vk::BufferImageCopy::builder()
+						.image_subresource(
+							vk::ImageSubresourceLayers::builder()
+								.aspect_mask(vk::ImageAspectFlags::COLOR)
+								.layer_count(1)
+								.build()
+						)
+						.image_extent(vk::Extent3D { width: image_dimensions.0, height: image_dimensions.1, depth: 1 });
 
-				unsafe {
-					device.cmd_copy_buffer_to_image(
-						*cb_lock,
-						*image_buffer.deref().deref(),
-						*texture_image_view.image().deref().deref(),
-						vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-						&[buffer_copy_regions.build()]
-					);
-				}
-				let texture_barrier_end = vk::ImageMemoryBarrier {
-					src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
-					dst_access_mask: vk::AccessFlags::SHADER_READ,
-					old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
-					new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
-					image: *texture_image_view.image().deref().deref(),
-					subresource_range: vk::ImageSubresourceRange {
-						aspect_mask: vk::ImageAspectFlags::COLOR,
-						level_count: 1,
-						layer_count: 1,
+					unsafe {
+						device.cmd_copy_buffer_to_image(
+							*cb_lock,
+							*image_buffer.deref().deref(),
+							*texture_image_view.image().deref().deref(),
+							vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+							&[buffer_copy_regions.build()]
+						);
+					}
+					let texture_barrier_end = vk::ImageMemoryBarrier {
+						src_access_mask: vk::AccessFlags::TRANSFER_WRITE,
+						dst_access_mask: vk::AccessFlags::SHADER_READ,
+						old_layout: vk::ImageLayout::TRANSFER_DST_OPTIMAL,
+						new_layout: vk::ImageLayout::SHADER_READ_ONLY_OPTIMAL,
+						image: *texture_image_view.image().deref().deref(),
+						subresource_range: vk::ImageSubresourceRange {
+							aspect_mask: vk::ImageAspectFlags::COLOR,
+							level_count: 1,
+							layer_count: 1,
+							..Default::default()
+						},
 						..Default::default()
-					},
-					..Default::default()
-				};
-				unsafe {
-					device.cmd_pipeline_barrier(
-						*cb_lock,
-						vk::PipelineStageFlags::TRANSFER,
-						vk::PipelineStageFlags::FRAGMENT_SHADER,
-						vk::DependencyFlags::empty(),
-						&[],
-						&[],
-						&[texture_barrier_end]
-					);
+					};
+					unsafe {
+						device.cmd_pipeline_barrier(
+							*cb_lock,
+							vk::PipelineStageFlags::TRANSFER,
+							vk::PipelineStageFlags::FRAGMENT_SHADER,
+							vk::DependencyFlags::empty(),
+							&[],
+							&[],
+							&[texture_barrier_end]
+						);
+					}
 				}
-			});
-			submit_command_buffer_simple(&base.setup_command_buffer, &base.present_queue);
+			);
+			submit_command_buffer_simple(
+				&base.setup_command_buffer,
+				&base.present_queue
+			);
 
 			let (
 				viewports,
@@ -399,14 +365,8 @@ fn main() {
 				let sampler = base.device.create_sampler(&sampler_info, None).unwrap();
 
 				let descriptor_sizes = [
-					vk::DescriptorPoolSize {
-						ty: vk::DescriptorType::UNIFORM_BUFFER,
-						descriptor_count: 1
-					},
-					vk::DescriptorPoolSize {
-						ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER,
-						descriptor_count: 1
-					}
+					vk::DescriptorPoolSize { ty: vk::DescriptorType::UNIFORM_BUFFER, descriptor_count: 1 },
+					vk::DescriptorPoolSize { ty: vk::DescriptorType::COMBINED_IMAGE_SAMPLER, descriptor_count: 1 }
 				];
 				let descriptor_pool_info = vk::DescriptorPoolCreateInfo::builder()
 					.pool_sizes(&descriptor_sizes)
@@ -431,8 +391,7 @@ fn main() {
 						..Default::default()
 					}
 				];
-				let descriptor_info =
-					vk::DescriptorSetLayoutCreateInfo::builder().bindings(&desc_layout_bindings);
+				let descriptor_info = vk::DescriptorSetLayoutCreateInfo::builder().bindings(&desc_layout_bindings);
 
 				let desc_set_layouts = [base
 					.device
@@ -478,17 +437,13 @@ fn main() {
 				];
 				base.device.update_descriptor_sets(&write_desc_sets, &[]);
 
-				let mut vertex_spv_file =
-					Cursor::new(&include_bytes!("../../shader/texture/vert.spv")[..]);
-				let mut frag_spv_file =
-					Cursor::new(&include_bytes!("../../shader/texture/frag.spv")[..]);
+				let mut vertex_spv_file = Cursor::new(&include_bytes!("../../shader/texture/vert.spv")[..]);
+				let mut frag_spv_file = Cursor::new(&include_bytes!("../../shader/texture/frag.spv")[..]);
 
-				let vertex_code =
-					read_spv(&mut vertex_spv_file).expect("Failed to read vertex shader spv file");
+				let vertex_code = read_spv(&mut vertex_spv_file).expect("Failed to read vertex shader spv file");
 				let vertex_shader_info = vk::ShaderModuleCreateInfo::builder().code(&vertex_code);
 
-				let frag_code =
-					read_spv(&mut frag_spv_file).expect("Failed to read fragment shader spv file");
+				let frag_code = read_spv(&mut frag_spv_file).expect("Failed to read fragment shader spv file");
 				let frag_shader_info = vk::ShaderModuleCreateInfo::builder().code(&frag_code);
 
 				let vertex_shader_module = base
@@ -501,8 +456,7 @@ fn main() {
 					.create_shader_module(&frag_shader_info, None)
 					.expect("Fragment shader module error");
 
-				let layout_create_info =
-					vk::PipelineLayoutCreateInfo::builder().set_layouts(&desc_set_layouts);
+				let layout_create_info = vk::PipelineLayoutCreateInfo::builder().set_layouts(&desc_set_layouts);
 
 				let pipeline_layout = base
 					.device
@@ -547,10 +501,8 @@ fn main() {
 					.vertex_attribute_descriptions(&vertex_input_attribute_descriptions)
 					.vertex_binding_descriptions(&vertex_input_binding_descriptions);
 
-				let vertex_input_assembly_state_info = vk::PipelineInputAssemblyStateCreateInfo {
-					topology: vk::PrimitiveTopology::TRIANGLE_LIST,
-					..Default::default()
-				};
+				let vertex_input_assembly_state_info =
+					vk::PipelineInputAssemblyStateCreateInfo { topology: vk::PrimitiveTopology::TRIANGLE_LIST, ..Default::default() };
 				let viewports = [vk::Viewport {
 					x: 0.0,
 					y: 0.0,
@@ -559,10 +511,7 @@ fn main() {
 					min_depth: 0.0,
 					max_depth: 1.0
 				}];
-				let scissors = [vk::Rect2D {
-					extent: base.surface_size.into(),
-					..Default::default()
-				}];
+				let scissors = [vk::Rect2D { extent: base.surface_size.into(), ..Default::default() }];
 				let viewport_state_info = vk::PipelineViewportStateCreateInfo::builder()
 					.scissors(&scissors)
 					.viewports(&viewports);
@@ -574,8 +523,7 @@ fn main() {
 					..Default::default()
 				};
 
-				let multisample_state_info = vk::PipelineMultisampleStateCreateInfo::builder()
-					.rasterization_samples(vk::SampleCountFlags::TYPE_1);
+				let multisample_state_info = vk::PipelineMultisampleStateCreateInfo::builder().rasterization_samples(vk::SampleCountFlags::TYPE_1);
 
 				let noop_stencil_state = vk::StencilOpState {
 					fail_op: vk::StencilOp::KEEP,
@@ -602,15 +550,14 @@ fn main() {
 					src_alpha_blend_factor: vk::BlendFactor::ZERO,
 					dst_alpha_blend_factor: vk::BlendFactor::ZERO,
 					alpha_blend_op: vk::BlendOp::ADD,
-					color_write_mask: vk::ColorComponentFlags::all()
+					color_write_mask: vk::ColorComponentFlags::RGBA
 				}];
 				let color_blend_state = vk::PipelineColorBlendStateCreateInfo::builder()
 					.logic_op(vk::LogicOp::CLEAR)
 					.attachments(&color_blend_attachment_states);
 
 				let dynamic_state = [vk::DynamicState::VIEWPORT, vk::DynamicState::SCISSOR];
-				let dynamic_state_info =
-					vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dynamic_state);
+				let dynamic_state_info = vk::PipelineDynamicStateCreateInfo::builder().dynamic_states(&dynamic_state);
 
 				let graphic_pipeline_infos = vk::GraphicsPipelineCreateInfo::builder()
 					.stages(&shader_stage_create_infos)
@@ -651,78 +598,69 @@ fn main() {
 
 			base.render_loop(|base, present_index| {
 				let clear_values = [
-					vk::ClearValue {
-						color: vk::ClearColorValue {
-							float32: [0.0, 0.0, 0.0, 0.0]
-						}
-					},
-					vk::ClearValue {
-						depth_stencil: vk::ClearDepthStencilValue {
-							depth: 1.0,
-							stencil: 0
-						}
-					}
+					vk::ClearValue { color: vk::ClearColorValue { float32: [0.0, 0.0, 0.0, 0.0] } },
+					vk::ClearValue { depth_stencil: vk::ClearDepthStencilValue { depth: 1.0, stencil: 0 } }
 				];
 
 				let render_pass_begin_info = vk::RenderPassBeginInfo::builder()
 					.render_pass(renderpass)
 					.framebuffer(framebuffers[present_index as usize])
-					.render_area(vk::Rect2D {
-						offset: vk::Offset2D { x: 0, y: 0 },
-						extent: base.surface_size.into()
-					})
+					.render_area(vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: base.surface_size.into() })
 					.clear_values(&clear_values);
 
-				record_command_buffer(&base.draw_command_buffer, |command_buffer| {
-					let device = command_buffer.pool().device();
-					let cb_lock = command_buffer.lock().expect("vutex poisoned");
+				record_command_buffer(
+					&base.draw_command_buffer,
+					|command_buffer| {
+						let device = command_buffer.pool().device();
+						let cb_lock = command_buffer.lock().expect("vutex poisoned");
 
-					unsafe {
-						device.cmd_begin_render_pass(
-							*cb_lock,
-							&render_pass_begin_info,
-							vk::SubpassContents::INLINE
-						);
-						device.cmd_bind_descriptor_sets(
-							*cb_lock,
-							vk::PipelineBindPoint::GRAPHICS,
-							pipeline_layout,
-							0,
-							&descriptor_sets[..],
-							&[]
-						);
-						device.cmd_bind_pipeline(
-							*cb_lock,
-							vk::PipelineBindPoint::GRAPHICS,
-							graphics_pipeline
-						);
-						device.cmd_set_viewport(*cb_lock, 0, &viewports);
-						device.cmd_set_scissor(*cb_lock, 0, &scissors);
-						device.cmd_bind_vertex_buffers(
-							*cb_lock,
-							0,
-							&[*vertex_buffer.deref().deref()],
-							&[0]
-						);
-						device.cmd_bind_index_buffer(
-							*cb_lock,
-							*index_buffer.deref().deref(),
-							0,
-							vk::IndexType::UINT32
-						);
-						device.cmd_draw_indexed(
-							*cb_lock,
-							index_buffer_data.len() as u32,
-							1,
-							0,
-							0,
-							1
-						);
-						// Or draw without the index buffer
-						// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
-						device.cmd_end_render_pass(*cb_lock);
+						unsafe {
+							device.cmd_begin_render_pass(
+								*cb_lock,
+								&render_pass_begin_info,
+								vk::SubpassContents::INLINE
+							);
+							device.cmd_bind_descriptor_sets(
+								*cb_lock,
+								vk::PipelineBindPoint::GRAPHICS,
+								pipeline_layout,
+								0,
+								&descriptor_sets[..],
+								&[]
+							);
+							device.cmd_bind_pipeline(
+								*cb_lock,
+								vk::PipelineBindPoint::GRAPHICS,
+								graphics_pipeline
+							);
+							device.cmd_set_viewport(*cb_lock, 0, &viewports);
+							device.cmd_set_scissor(*cb_lock, 0, &scissors);
+							device.cmd_bind_vertex_buffers(
+								*cb_lock,
+								0,
+								&[*vertex_buffer.deref().deref()],
+								&[0]
+							);
+							device.cmd_bind_index_buffer(
+								*cb_lock,
+								*index_buffer.deref().deref(),
+								0,
+								vk::IndexType::UINT32
+							);
+							device.cmd_draw_indexed(
+								*cb_lock,
+								index_buffer_data.len() as u32,
+								1,
+								0,
+								0,
+								1
+							);
+							// Or draw without the index buffer
+							// device.cmd_draw(draw_command_buffer, 3, 1, 0, 0);
+							device.cmd_end_render_pass(*cb_lock);
+						}
 					}
-				});
+				);
 				submit_command_buffer(
 					&base.draw_command_buffer,
 					&base.present_queue,

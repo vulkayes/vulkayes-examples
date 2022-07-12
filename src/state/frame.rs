@@ -1,6 +1,4 @@
-use vulkayes_core::ash::{version::DeviceV1_0, vk};
-
-use vulkayes_core::{prelude::*, util::WaitTimeout};
+use vulkayes_core::{ash::vk, prelude::*, util::WaitTimeout};
 
 #[derive(Debug)]
 pub(super) struct FrameChain {
@@ -16,8 +14,7 @@ pub(super) struct FrameChain {
 }
 impl FrameChain {
 	pub fn new(command_pool: Vrc<CommandPool>) -> Self {
-		let command_buffer =
-			CommandBuffer::new(command_pool, true).expect("could not allocate command buffer");
+		let command_buffer = CommandBuffer::new(command_pool, true).expect("could not allocate command buffer");
 		Self::from_command_buffer(command_buffer)
 	}
 
@@ -26,12 +23,9 @@ impl FrameChain {
 
 		Self {
 			command_buffer,
-			acquire_semaphore: Semaphore::binary(device.clone(), Default::default())
-				.expect("could not create semaphore"),
-			execution_semaphore: Semaphore::binary(device.clone(), Default::default())
-				.expect("could not create semaphore"),
-			execution_fence: Fence::new(device, false, Default::default())
-				.expect("could not create fence"),
+			acquire_semaphore: Semaphore::binary(device.clone(), Default::default()).expect("could not create semaphore"),
+			execution_semaphore: Semaphore::binary(device.clone(), Default::default()).expect("could not create semaphore"),
+			execution_fence: Fence::new(device, false, Default::default()).expect("could not create fence"),
 			pending: false
 		}
 	}
@@ -58,11 +52,13 @@ impl FrameChain {
 			self.command_buffer
 				.pool()
 				.device()
-				.reset_command_buffer(*cb_lock, vk::CommandBufferResetFlags::RELEASE_RESOURCES)
+				.reset_command_buffer(
+					*cb_lock,
+					vk::CommandBufferResetFlags::RELEASE_RESOURCES
+				)
 				.expect("reset command buffer failed.");
 
-			let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
-				.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+			let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 			self.command_buffer
 				.pool()
 				.device()
@@ -138,33 +134,20 @@ impl CommandState {
 		next
 	}
 
-	pub(super) fn execute_setup_blocking(
-		&mut self,
-		queue: &Queue,
-		setup_fn: impl FnOnce(&CommandBuffer)
-	) {
-		vulkayes_core::const_queue_submit! {
-			pub fn submit(
-				&queue,
-				waits: [&Semaphore; 0],
-				stages: [vk::PipelineStageFlags; _],
-				buffers: [&CommandBuffer; 1],
-				signals: [&Semaphore; 0],
-				fence: Option<&Fence>
-			) -> Result<(), QueueSubmitError>;
-		};
-
+	pub(super) fn execute_setup_blocking(&mut self, queue: &Queue, setup_fn: impl FnOnce(&CommandBuffer)) {
 		{
 			let cb_lock = self.setup_command_buffer.lock().expect("vutex poisoned");
 			unsafe {
 				self.setup_command_buffer
 					.pool()
 					.device()
-					.reset_command_buffer(*cb_lock, vk::CommandBufferResetFlags::RELEASE_RESOURCES)
+					.reset_command_buffer(
+						*cb_lock,
+						vk::CommandBufferResetFlags::RELEASE_RESOURCES
+					)
 					.expect("reset command buffer failed.");
 
-				let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder()
-					.flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
+				let command_buffer_begin_info = vk::CommandBufferBeginInfo::builder().flags(vk::CommandBufferUsageFlags::ONE_TIME_SUBMIT);
 				self.setup_command_buffer
 					.pool()
 					.device()
@@ -186,15 +169,15 @@ impl CommandState {
 			}
 		}
 
-		submit(
-			queue,
-			[],
-			[],
-			[&self.setup_command_buffer],
-			[],
-			Some(&self.setup_fence)
-		)
-		.expect("could not submit command buffer");
+		queue
+			.submit(
+				[],
+				[],
+				[&self.setup_command_buffer],
+				[],
+				Some(&self.setup_fence)
+			)
+			.expect("could not submit command buffer");
 
 		self.setup_fence
 			.wait(Default::default())
@@ -234,25 +217,25 @@ impl NextFrame<'_> {
 	}
 
 	pub fn submit_and_present(mut self) {
-		vulkayes_core::const_queue_present!(
-			pub fn queue_present(
-				&queue,
-				waits: [&Semaphore; 1],
-				images: [&SwapchainImage; 1],
-				result_for_all: bool
-			) -> QueuePresentMultipleResult<[QueuePresentResult; _]>;
-		);
+		// vulkayes_core::const_queue_present!(
+		// 	pub fn queue_present(
+		// 		&queue,
+		// 		waits: [&Semaphore; 1],
+		// 		images: [&SwapchainImage; 1],
+		// 		result_for_all: bool
+		// 	) -> QueuePresentMultipleResult<[QueuePresentResult; _]>;
+		// );
 
-		vulkayes_core::const_queue_submit! {
-			pub fn submit(
-				&queue,
-				waits: [&Semaphore; 1],
-				stages: [vk::PipelineStageFlags; _],
-				buffers: [&CommandBuffer; 1],
-				signals: [&Semaphore; 1],
-				fence: Option<&Fence>
-			) -> Result<(), QueueSubmitError>;
-		};
+		// vulkayes_core::const_queue_submit! {
+		// 	pub fn submit(
+		// 		&queue,
+		// 		waits: [&Semaphore; 1],
+		// 		stages: [vk::PipelineStageFlags; _],
+		// 		buffers: [&CommandBuffer; 1],
+		// 		signals: [&Semaphore; 1],
+		// 		fence: Option<&Fence>
+		// 	) -> Result<(), QueueSubmitError>;
+		// };
 
 		unsafe {
 			let cb_lock = self.command_buffer().lock().expect("vutex poisoned");
@@ -266,37 +249,31 @@ impl NextFrame<'_> {
 		if let Some(last_before) = self.state.last_before.take() {
 			self.state.last_before_middle = Some(crate::dirty_mark::middle(last_before));
 		}
-		submit(
-			&self.state.base.present_queue,
-			[&self.chain().acquire_semaphore],
-			[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
-			[self.command_buffer()],
-			[&self.chain().execution_semaphore],
-			Some(&self.chain().execution_fence)
-		)
-		.expect("queue submit failed");
+		self.state
+			.base
+			.present_queue
+			.submit(
+				[&self.chain().acquire_semaphore],
+				[vk::PipelineStageFlags::COLOR_ATTACHMENT_OUTPUT],
+				[self.command_buffer()],
+				[&self.chain().execution_semaphore],
+				Some(&self.chain().execution_fence)
+			)
+			.expect("queue submit failed");
 
-		match queue_present(
-			&self.state.base.present_queue,
+		match self.state.base.present_queue.present(
 			[&self.chain().execution_semaphore],
-			[
-				&self.state.swapchain.present_views[self.present_index as usize]
-					.image()
-					.try_swapchain_image()
-					.unwrap()
-			],
-			false
+			[&self.state.swapchain.present_views[self.present_index as usize]
+				.image()
+				.try_as_swapchain_image()
+				.unwrap()]
 		) {
-			vulkayes_core::queue::error::QueuePresentMultipleResult::Single(result) => match result
-			{
-				Ok(vulkayes_core::queue::error::QueuePresentResultValue::SUCCESS) => (),
-				Ok(vulkayes_core::queue::error::QueuePresentResultValue::SUBOPTIMAL_KHR)
-				| Err(vulkayes_core::queue::error::QueuePresentError::ERROR_OUT_OF_DATE_KHR) => {
-					self.state.swapchain.outdated += 1;
-				}
-				Err(e) => panic!("{}", e)
-			},
-			_ => unreachable!()
+			Ok(vulkayes_core::queue::error::QueuePresentSuccess::SUCCESS) => (),
+			Ok(vulkayes_core::queue::error::QueuePresentSuccess::SUBOPTIMAL_KHR)
+			| Err(vulkayes_core::queue::error::QueuePresentError::ERROR_OUT_OF_DATE_KHR) => {
+				self.state.swapchain.outdated += 1;
+			}
+			Err(e) => panic!("{}", e)
 		}
 
 		if crate::state::WAIT_AFTER_FRAME {
@@ -339,10 +316,6 @@ impl super::ApplicationState {
 		self.command.draw_frame_chains[frame_index].pending = true;
 		self.command.draw_frame_chains[frame_index].reset_command_buffer();
 
-		NextFrame {
-			state: self,
-			frame_index,
-			present_index
-		}
+		NextFrame { state: self, frame_index, present_index }
 	}
 }

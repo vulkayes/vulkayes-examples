@@ -2,7 +2,6 @@ use std::{num::NonZeroU32, sync::mpsc};
 
 use vulkayes_core::log;
 use vulkayes_window::winit::winit;
-
 use winit::window::Window;
 
 #[derive(Debug)]
@@ -19,15 +18,19 @@ impl super::ApplicationState {
 	/// thus has to be called from the main thread on such systems.
 	pub(super) fn new_input_thread_inner(
 		window_size: [NonZeroU32; 2],
-		render_thread_fn: impl FnOnce(Window, mpsc::Receiver<InputEvent>, mpsc::Sender<Window>)
-			+ Send
-			+ 'static
+		render_thread_fn: impl FnOnce(Window, mpsc::Receiver<InputEvent>, mpsc::Sender<Window>) + Send + 'static
 	) -> ! {
+		use edwardium_logger::{
+			targets::{stderr::StderrTarget, util::ignore_list::IgnoreList},
+			Logger
+		};
+
 		// Register a logger since Vulkayes logs through the log crate
-		let logger = edwardium_logger::Logger::new(
-			[edwardium_logger::targets::stderr::StderrTarget::new(
-				log::Level::Trace
-			)],
+		let logger = Logger::new(
+			StderrTarget::new(
+				log::Level::Trace,
+				IgnoreList::EMPTY_PATTERNS
+			),
 			std::time::Instant::now()
 		);
 		logger.init_boxed().expect("Could not initialize logger");
@@ -58,7 +61,12 @@ impl super::ApplicationState {
 			.recv()
 			.expect("could not receive window back");
 
-		Self::input_loop(input_sender, event_loop, window, render_thread)
+		Self::input_loop(
+			input_sender,
+			event_loop,
+			window,
+			render_thread
+		)
 	}
 
 	fn input_loop(
@@ -81,17 +89,14 @@ impl super::ApplicationState {
 		event_loop.run(move |event, _target, control_flow| {
 			// Handle window close event
 			let event_to_send = match event {
-				Event::WindowEvent {
-					event: WindowEvent::CloseRequested,
-					..
-				} => {
+				Event::WindowEvent { event: WindowEvent::CloseRequested, .. } => {
 					*control_flow = ControlFlow::Exit;
 					Some(InputEvent::Exit)
 				}
-				Event::WindowEvent {
-					event: WindowEvent::Resized(size),
-					..
-				} => match (NonZeroU32::new(size.width), NonZeroU32::new(size.height)) {
+				Event::WindowEvent { event: WindowEvent::Resized(size), .. } => match (
+					NonZeroU32::new(size.width),
+					NonZeroU32::new(size.height)
+				) {
 					(Some(w), Some(h)) => Some(InputEvent::WindowSize([w, h])),
 					_ => None
 				},

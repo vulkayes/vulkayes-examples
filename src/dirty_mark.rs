@@ -45,7 +45,7 @@ pub unsafe fn init() {
 }
 pub unsafe fn flush() {
 	if BUFFER.len() > 0 {
-		println!("BUFFER: {:?}", BUFFER);
+		// println!("BUFFER: {:?}", BUFFER);
 		BUFFER.set_len(0);
 	}
 }
@@ -103,5 +103,5 @@ macro_rules! sub_release {
 		let res = $release;
 
 		res
-		}};
+	}};
 }

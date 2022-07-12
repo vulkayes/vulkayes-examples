@@ -1,4 +1,4 @@
-use std::num::NonZeroU32;
+use std::{ffi::CStr, num::NonZeroU32};
 
 use vulkayes_core::{
 	ash::{self, vk},
@@ -14,7 +14,7 @@ use super::{frame::CommandState, BaseState, SwapchainState};
 impl super::ApplicationState {
 	/// Setups basics such as the instance, device and present queue.
 	pub(super) fn setup_base<'a>(
-		surface_extensions: impl Iterator<Item = &'a str>,
+		surface_extensions: impl Iterator<Item = &'a CStr> + std::fmt::Debug,
 		surface_fn: impl FnOnce(Vrc<Instance>) -> Surface
 	) -> (BaseState, Surface) {
 		// Create Entry, which is the entry point into the Vulkan API.
@@ -24,7 +24,7 @@ impl super::ApplicationState {
 		// Create instance from loaded entry
 		// Also enable validation layers and require surface extensions as defined in vulkayes_window
 		let layers = sub_release! {
-			["VK_LAYER_KHRONOS_validation"].iter().map(|&s| s),
+			std::iter::once(crate::VALIDATION_LAYER),
 			std::iter::empty()
 		};
 
@@ -38,7 +38,7 @@ impl super::ApplicationState {
 			},
 			layers,
 			surface_extensions.chain(std::iter::once(
-				ash::extensions::ext::DebugReport::name().to_str().unwrap()
+				ash::extensions::ext::DebugUtils::name()
 			)),
 			Default::default(),
 			// Lastly, register Default debug callbacks that log using the log crate
@@ -79,18 +79,10 @@ impl super::ApplicationState {
 
 			let mut device_data = Device::new(
 				physical_device,
-				[vulkayes_core::device::QueueCreateInfo {
-					queue_family_index: queue_family_index as u32,
-					queue_priorities: [1.0]
-				}],
+				[vulkayes_core::device::QueueCreateInfo { queue_family_index: queue_family_index as u32, queue_priorities: [1.0] }],
 				None,
-				[ash::extensions::khr::Swapchain::name().to_str().unwrap()]
-					.iter()
-					.map(|&s| s),
-				vk::PhysicalDeviceFeatures {
-					shader_clip_distance: 1,
-					..Default::default()
-				},
+				std::iter::once(ash::extensions::khr::Swapchain::name()),
+				vk::PhysicalDeviceFeatures { shader_clip_distance: 1, ..Default::default() },
 				Default::default()
 			)
 			.expect("Could not create device");
@@ -100,21 +92,13 @@ impl super::ApplicationState {
 			(device_data.device, present_queue)
 		};
 
-		let base = BaseState {
-			instance,
-			device,
-			present_queue
-		};
+		let base = BaseState { instance, device, present_queue };
 
 		(base, surface)
 	}
 
 	/// Setups the initial create info for swapchain.
-	pub(super) fn setup_swapchain_create_info(
-		surface: &Surface,
-		queue: &Queue,
-		surface_size: [NonZeroU32; 2]
-	) -> SwapchainCreateInfo<[u32; 1]> {
+	pub(super) fn setup_swapchain_create_info(surface: &Surface, queue: &Queue, surface_size: [NonZeroU32; 2]) -> SwapchainCreateInfo<[u32; 1]> {
 		let surface_format = surface
 			.physical_device_surface_formats(queue.device().physical_device())
 			.unwrap()
@@ -159,7 +143,7 @@ impl super::ApplicationState {
 				image_size: ImageSize::new_2d(
 					surface_resolution[0],
 					surface_resolution[1],
-					vulkayes_core::NONZEROU32_ONE,
+					NonZeroU32::new(1).unwrap(),
 					MipmapLevels::One()
 				),
 				image_usage: vk::ImageUsageFlags::COLOR_ATTACHMENT
@@ -173,11 +157,7 @@ impl super::ApplicationState {
 	}
 
 	/// Setups the initial swapchain and present images
-	pub(super) fn setup_swapchain(
-		surface: Surface,
-		present_queue: &Queue,
-		size: [NonZeroU32; 2]
-	) -> SwapchainState {
+	pub(super) fn setup_swapchain(surface: Surface, present_queue: &Queue, size: [NonZeroU32; 2]) -> SwapchainState {
 		let create_info = Self::setup_swapchain_create_info(&surface, &present_queue, size);
 
 		let swapchain_data = Swapchain::new(
@@ -191,21 +171,8 @@ impl super::ApplicationState {
 		let present_views = Self::create_present_views(swapchain_data.images);
 		let framebuffers = Vec::with_capacity(present_views.len());
 
-		let scissors = vk::Rect2D {
-			offset: vk::Offset2D { x: 0, y: 0 },
-			extent: vk::Extent2D {
-				width: size[0].get(),
-				height: size[1].get()
-			}
-		};
-		let viewport = vk::Viewport {
-			x: 0.0,
-			y: 0.0,
-			width: size[0].get() as f32,
-			height: size[1].get() as f32,
-			min_depth: 0.0,
-			max_depth: 1.0
-		};
+		let scissors = vk::Rect2D { offset: vk::Offset2D { x: 0, y: 0 }, extent: vk::Extent2D { width: size[0].get(), height: size[1].get() } };
+		let viewport = vk::Viewport { x: 0.0, y: 0.0, width: size[0].get() as f32, height: size[1].get() as f32, min_depth: 0.0, max_depth: 1.0 };
 
 		SwapchainState {
 			create_info,
@@ -239,8 +206,12 @@ impl super::ApplicationState {
 		.expect("Could not allocate command buffers");
 
 		let setup_command_buffer = command_buffers.pop().unwrap();
-		let setup_fence = Fence::new(present_queue.device().clone(), false, Default::default())
-			.expect("could not create fence");
+		let setup_fence = Fence::new(
+			present_queue.device().clone(),
+			false,
+			Default::default()
+		)
+		.expect("could not create fence");
 
 		CommandState::new(
 			command_pool,
